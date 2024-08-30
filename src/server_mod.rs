@@ -9,12 +9,9 @@ use tokio::{
     task,
 };
 
-mod common;
+use crate::common::get_user_input;
 
-use common::get_user_input;
-
-async fn handle_client_read(mut read_stream: OwnedReadHalf) {
-    println!("I got to this function");
+async fn handle_client_read(mut read_stream: OwnedReadHalf) -> String {
     let mut buffer = [0; 512];
 
     match read_stream.peer_addr() {
@@ -32,10 +29,11 @@ async fn handle_client_read(mut read_stream: OwnedReadHalf) {
                 break;
             }
             Ok(n) => {
-                println!(
-                    "Received message: {}",
-                    String::from_utf8_lossy(&buffer[..n])
-                );
+                String::from_utf8_lossy(&buffer[..n])
+                // println!(
+                //     "Received message: {}",
+                //     String::from_utf8_lossy(&buffer[..n])
+                // );
             }
             Err(e) => {
                 eprintln!("Failed to read from connection: {}", e);
@@ -44,6 +42,7 @@ async fn handle_client_read(mut read_stream: OwnedReadHalf) {
         }
     }
 }
+
 async fn handle_client_write(mut write_stream: OwnedWriteHalf) {
     loop {
         match get_user_input().await {
@@ -71,12 +70,14 @@ async fn handle_client(stream: TcpStream) {
 
     let _ = tokio::join!(read_future, write_future);
 }
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8888").await?;
 
-    while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(handle_client(stream));
-    }
-    Ok(())
-}
+// #[tokio::main]
+// async fn main() -> std::io::Result<()> {
+//     let listener = TcpListener::bind("0.0.0.0:8888").await?;
+//     println!("Server listening on 0.0.0.0:8888");
+
+//     while let Ok((stream, _)) = listener.accept().await {
+//         tokio::spawn(handle_client(stream));
+//     }
+//     Ok(())
+// }

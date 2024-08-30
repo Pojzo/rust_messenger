@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 crossterm = "0.26"
+eframe = "0.22"
+egui = "0.22"
+futures = "0.3"
 
 [[bin]]
 name = "server"
@@ -13,4 +16,8 @@ path = "src/server.rs"
 
 [[bin]]
 name = "client"
-path = "src/client.rs"
+path = "src_cli/client.rs"
+
+[[bin]]
+name = "ui"
+path = "src/ui.rs"

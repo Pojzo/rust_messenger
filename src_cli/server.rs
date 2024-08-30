@@ -1,30 +1,19 @@
-use std::io::{stdin, stdout, Read, Write};
-
-use common::get_user_input;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::OwnedReadHalf;
-use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::TcpStream;
-use tokio::task;
+use std::sync::Arc;
+use tokio::{
+    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpListener, TcpStream,
+    },
+    sync::Mutex,
+    task,
+};
 
 mod common;
 
-fn handle_user_input(buffer: &mut String) {
-    stdout().flush().unwrap();
-    stdin()
-        .read_line(buffer)
-        .expect("Did not enter a correct string");
+use common::get_user_input;
 
-    if let Some('\n') = buffer.chars().next_back() {
-        buffer.pop();
-    }
-    if let Some('\r') = buffer.chars().next_back() {
-        buffer.pop();
-    }
-}
-
-async fn handle_read(mut read_stream: OwnedReadHalf) {
+async fn handle_client_read(mut read_stream: OwnedReadHalf) {
     println!("I got to this function");
     let mut buffer = [0; 512];
 
@@ -39,7 +28,7 @@ async fn handle_read(mut read_stream: OwnedReadHalf) {
     loop {
         match read_stream.read(&mut buffer).await {
             Ok(0) => {
-                println!("Connection closed by the server.");
+                println!("Connection closed by the client.");
                 break;
             }
             Ok(n) => {
@@ -55,14 +44,14 @@ async fn handle_read(mut read_stream: OwnedReadHalf) {
         }
     }
 }
-
-async fn handle_write(mut write_stream: OwnedWriteHalf) {
+async fn handle_client_write(mut write_stream: OwnedWriteHalf) {
     loop {
         match get_user_input().await {
             Ok(message) => match write_stream.write_all(message.as_bytes()).await {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("{}", e);
+                    break;
                 }
             },
             Err(e) => {
@@ -73,22 +62,23 @@ async fn handle_write(mut write_stream: OwnedWriteHalf) {
     }
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let stream = TcpStream::connect("127.0.0.1:8888").await?;
-    println!("Connected to server");
-
+async fn handle_client(stream: TcpStream) {
     let (read_stream, write_stream) = stream.into_split();
 
-    let read_future = task::spawn(async move {
-        handle_read(read_stream).await;
-    });
+    let read_future = task::spawn(async move { handle_client_read(read_stream).await });
 
-    let write_future = task::spawn(async move {
-        handle_write(write_stream).await;
-    });
+    let write_future = task::spawn(async move { handle_client_write(write_stream).await });
 
     let _ = tokio::join!(read_future, write_future);
+}
 
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("0.0.0.0:8888").await?;
+    println!("Server listening on 0.0.0.0:8888");
+
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(handle_client(stream));
+    }
     Ok(())
 }
