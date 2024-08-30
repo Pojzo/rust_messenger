@@ -12,3 +12,9 @@ pub(crate) async fn get_user_input() -> io::Result<String> {
 
     Ok(buffer)
 }
+
+#[derive(Clone)]
+pub enum AppType {
+    SERVER,
+    CLIENT,
+}

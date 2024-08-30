@@ -1,39 +1,19 @@
 use eframe::egui;
-use server_mod::{stream_read, stream_write};
-use std::fmt::write;
+use std::io;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 use std::sync::Mutex;
 use std::time::Duration;
-use tokio::time;
+use tokio::time::{self, sleep};
 
-mod common;
-mod connection_status;
-mod server_mod;
-
-use connection_status::ConnectionStatus;
-
-#[tokio::main]
-async fn main() -> Result<(), eframe::Error> {
-    let options = eframe::NativeOptions::default();
-
-    // Create a runtime to run async tasks in the background
-    // let runtime = Arc::new(Mutex::new(Runtime::new().unwrap()));
-
-    eframe::run_native(
-        "Simple Chat UI",
-        options,
-        Box::new(move |_cc| {
-            let app = ChatApp::new();
-            Box::new(app)
-        }),
-    )
-}
+use crate::common::AppType;
+use crate::connection_status::ConnectionStatus;
+use crate::stream_utils::stream_read;
 
 type ChatHistory = Arc<Mutex<Vec<Message>>>;
 type Sender = Arc<AsyncMutex<mpsc::Sender<String>>>;
@@ -41,7 +21,8 @@ type Receiver = Arc<AsyncMutex<mpsc::Receiver<String>>>;
 type WriteStream = Arc<AsyncMutex<Option<OwnedWriteHalf>>>;
 
 #[derive(Clone)]
-struct ChatApp {
+pub struct ChatApp {
+    app_type: AppType,
     chat_input: String,
     chat_history: ChatHistory,
     connection_status: ConnectionStatus,
@@ -52,12 +33,13 @@ struct ChatApp {
 }
 
 impl ChatApp {
-    fn new() -> Self {
+    pub fn new(app_type: AppType) -> Self {
         let (tx, rx) = mpsc::channel(32);
 
         ChatApp {
             chat_input: String::new(),
             chat_history: Arc::new(Mutex::new(Vec::new())),
+            app_type,
             connection_status: ConnectionStatus::DISCONNECTED,
             tx: Arc::new(AsyncMutex::new(tx)),
             rx: Arc::new(AsyncMutex::new(rx)),
@@ -67,36 +49,86 @@ impl ChatApp {
     }
 
     fn init(&self) {
-        let app = Arc::new(AsyncMutex::new(self.clone()));
-        let app_clone = app.clone();
         let rx = self.rx.clone();
         let chat_history = self.chat_history.clone();
 
-        tokio::spawn(async move {
-            Self::poll_messages(rx, chat_history).await;
-        });
+        // tokio::spawn(async move {
+        //     Self::poll_messages(rx, chat_history).await;
+        // });
 
         println!("This init was called");
-        tokio::spawn(async move {
-            Self::init_server(app_clone)
-                .await
-                .expect("Failed to initialize server");
-        });
     }
 
-    async fn init_server(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+    pub fn init_connection(&mut self) {
+        self.connection_status = ConnectionStatus::CONNECTING;
+        let app = Arc::new(AsyncMutex::new(self.clone()));
+        let notify = Arc::new(Notify::new());
+        let notify_clone = notify.clone();
+
+        let mut failed = false;
+
+        tokio::spawn(async move {
+            let result = Self::retry_connection(app, notify_clone).await;
+            if let Err(e) = result {
+                eprintln!("Failed to establish connection: {:?}", e);
+                failed = true;
+            }
+        });
+
+        let _ = notify.notified();
+        println!("got after the notify");
+        if failed {
+            self.connection_status = ConnectionStatus::FAILED;
+        }
+    }
+
+    async fn retry_connection(
+        app: Arc<AsyncMutex<ChatApp>>,
+        notify: Arc<Notify>,
+    ) -> Result<(), io::Error> {
+        let retries_threshold = 5;
+        let retry_delay = Duration::from_secs(2);
+
+        for attempt in 1..=retries_threshold {
+            let app_clone = app.clone();
+
+            // Try to initialize connection
+            let result = Self::init_connection_internal(app_clone).await;
+            if result.is_ok() {
+                println!("Successfully established connection on attempt {}", attempt);
+                notify.notify_one(); // Notify that connection was successful
+                return Ok(());
+            } else {
+                eprintln!(
+                    "Failed to initialize connection on attempt {}: {:?}",
+                    attempt,
+                    result.err().unwrap()
+                );
+                if attempt < retries_threshold {
+                    sleep(retry_delay).await; // Wait before the next attempt
+                }
+            }
+        }
+        notify.notify_one();
+
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Failed to establish connection after maximum retries",
+        ))
+    }
+
+    async fn init_connection_internal(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
         // Binding the TcpListener to the address
-        let listener = TcpListener::bind("0.0.0.0:8888").await?;
+        let stream = TcpStream::connect("0.0.0.0:8888").await?;
+
         println!("Listening");
 
         // Accepting an incoming connection
-        if let Ok((stream, _)) = listener.accept().await {
-            let (read_stream, write_stream) = stream.into_split();
-            let app = app.lock().await;
-            *app.write_stream.lock().await = Some(write_stream);
+        let (read_stream, write_stream) = stream.into_split();
+        let app = app.lock().await;
+        *app.write_stream.lock().await = Some(write_stream);
 
-            stream_read(read_stream, app.tx.clone()).await;
-        }
+        stream_read(read_stream, app.tx.clone()).await;
 
         Ok(())
     }
@@ -152,10 +184,6 @@ impl ChatApp {
 
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.connection_status == ConnectionStatus::DISCONNECTED {
-            self.init();
-            self.connection_status = ConnectionStatus::CONNECTING;
-        }
         egui::TopBottomPanel::top("chat_history_panel").show(ctx, |ui| {
             ui.heading("Chat History:");
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -178,6 +206,15 @@ impl eframe::App for ChatApp {
         egui::SidePanel::right("Status panel").show(ctx, |ui| {
             ui.heading("Connection status");
             ui.label(&self.connection_status.to_string());
+            let button_text = match self.connection_status {
+                ConnectionStatus::CONNECTED => "Disconnect",
+                ConnectionStatus::DISCONNECTED => "Connect",
+                ConnectionStatus::CONNECTING => "",
+                ConnectionStatus::FAILED => "Retry connect",
+            };
+            if ui.button(button_text).clicked() {
+                self.init_connection();
+            };
         });
 
         // Bottom panel for the chat input
@@ -192,6 +229,7 @@ impl eframe::App for ChatApp {
                         let write_stream_copy = self.write_stream.clone();
                         let chat_history_clone = self.chat_history.clone();
 
+                        /*
                         tokio::spawn(async move {
                             let mut write_stream_guard = write_stream_copy.lock().await;
                             if let Some(write_stream) = &mut *write_stream_guard {
@@ -205,6 +243,7 @@ impl eframe::App for ChatApp {
                                 eprintln!("Write stream is not available");
                             }
                         });
+                        */
 
                         self.chat_input.clear();
                     }

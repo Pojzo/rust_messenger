@@ -5,6 +5,7 @@ pub(crate) enum ConnectionStatus {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
+    FAILED,
 }
 
 impl Default for ConnectionStatus {
@@ -19,6 +20,7 @@ impl fmt::Display for ConnectionStatus {
             ConnectionStatus::DISCONNECTED => write!(f, "Disconnected"),
             ConnectionStatus::CONNECTED => write!(f, "Connected"),
             ConnectionStatus::CONNECTING => write!(f, "Connecting"),
+            ConnectionStatus::FAILED => write!(f, "Failed"),
         }
     }
 }

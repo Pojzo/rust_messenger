@@ -16,12 +16,4 @@ path = "src/server.rs"
 
 [[bin]]
 name = "client"
-path = "src_cli/client.rs"
-
-[[bin]]
-name = "ui"
-path = "src/ui.rs"
-
-[[bin]]
-name = "ui-client"
-path = "src/ui_client.rs"
+path = "src/client.rs"
