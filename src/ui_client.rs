@@ -4,7 +4,7 @@ use std::fmt::write;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -78,25 +78,23 @@ impl ChatApp {
 
         println!("This init was called");
         tokio::spawn(async move {
-            Self::init_server(app_clone)
+            Self::init_client(app_clone)
                 .await
                 .expect("Failed to initialize server");
         });
     }
 
-    async fn init_server(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+    async fn init_client(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
         // Binding the TcpListener to the address
-        let listener = TcpListener::bind("0.0.0.0:8888").await?;
+        let stream = TcpStream::connect("0.0.0.0:8888").await?;
         println!("Listening");
 
         // Accepting an incoming connection
-        if let Ok((stream, _)) = listener.accept().await {
-            let (read_stream, write_stream) = stream.into_split();
-            let app = app.lock().await;
-            *app.write_stream.lock().await = Some(write_stream);
+        let (read_stream, write_stream) = stream.into_split();
+        let app = app.lock().await;
+        *app.write_stream.lock().await = Some(write_stream);
 
-            stream_read(read_stream, app.tx.clone()).await;
-        }
+        stream_read(read_stream, app.tx.clone()).await;
 
         Ok(())
     }

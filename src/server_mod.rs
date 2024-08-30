@@ -1,17 +1,16 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
-    net::{
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
-        TcpListener, TcpStream,
-    },
-    sync::Mutex,
-    task,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
+    sync::{mpsc, Mutex as AsyncMutex, Notify},
 };
 
 use crate::common::get_user_input;
 
-async fn handle_client_read(mut read_stream: OwnedReadHalf) -> String {
+pub async fn stream_read(
+    mut read_stream: OwnedReadHalf,
+    tx: Arc<AsyncMutex<mpsc::Sender<String>>>,
+) {
     let mut buffer = [0; 512];
 
     match read_stream.peer_addr() {
@@ -29,11 +28,16 @@ async fn handle_client_read(mut read_stream: OwnedReadHalf) -> String {
                 break;
             }
             Ok(n) => {
-                String::from_utf8_lossy(&buffer[..n])
-                // println!(
-                //     "Received message: {}",
-                //     String::from_utf8_lossy(&buffer[..n])
-                // );
+                let tx_guard = tx.lock().await;
+                let message = String::from_utf8_lossy(&buffer[..n]);
+                match tx_guard.send(message.to_string()).await {
+                    Ok(_) => {
+                        println!("Received message: {}", message);
+                    }
+                    Err(e) => {
+                        println!("Couldnt receive message: {}", e);
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("Failed to read from connection: {}", e);
@@ -43,7 +47,7 @@ async fn handle_client_read(mut read_stream: OwnedReadHalf) -> String {
     }
 }
 
-async fn handle_client_write(mut write_stream: OwnedWriteHalf) {
+pub async fn stream_write(mut write_stream: OwnedWriteHalf) {
     loop {
         match get_user_input().await {
             Ok(message) => match write_stream.write_all(message.as_bytes()).await {
@@ -60,24 +64,3 @@ async fn handle_client_write(mut write_stream: OwnedWriteHalf) {
         }
     }
 }
-
-async fn handle_client(stream: TcpStream) {
-    let (read_stream, write_stream) = stream.into_split();
-
-    let read_future = task::spawn(async move { handle_client_read(read_stream).await });
-
-    let write_future = task::spawn(async move { handle_client_write(write_stream).await });
-
-    let _ = tokio::join!(read_future, write_future);
-}
-
-// #[tokio::main]
-// async fn main() -> std::io::Result<()> {
-//     let listener = TcpListener::bind("0.0.0.0:8888").await?;
-//     println!("Server listening on 0.0.0.0:8888");
-
-//     while let Ok((stream, _)) = listener.accept().await {
-//         tokio::spawn(handle_client(stream));
-//     }
-//     Ok(())
-// }
