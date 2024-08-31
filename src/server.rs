@@ -16,7 +16,8 @@ async fn main() -> Result<(), eframe::Error> {
         "Server application",
         options,
         Box::new(move |_cc| {
-            let app = ChatApp::new(AppType::SERVER);
+            let mut app = ChatApp::new(AppType::SERVER);
+            app.set_serer_addr("0.0.0.0:8888".to_string());
             Box::new(app)
         }),
     )

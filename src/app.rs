@@ -33,6 +33,7 @@ pub struct ChatApp {
     rx: Receiver,
     write_stream: WriteStream,
     stop_signal: Arc<Notify>,
+    server_addr: String,
     connected_to_addr: String,
 }
 
@@ -50,9 +51,18 @@ impl ChatApp {
             rx: Arc::new(AsyncMutex::new(rx)),
             write_stream: Arc::new(AsyncMutex::new(None)),
             stop_signal: Arc::new(Notify::new()),
+            server_addr: "".to_string(),
             connected_to_addr: "".to_string(),
         }
     }
+    pub fn set_serer_addr(&mut self, addr: String) -> bool {
+        if self.app_type == AppType::CLIENT {
+            return false;
+        }
+        self.server_addr = addr;
+        return true;
+    }
+
     async fn retry_connection(
         app: Arc<AsyncMutex<ChatApp>>,
         notify: Arc<Notify>,
@@ -96,22 +106,29 @@ impl ChatApp {
         });
     }
 
-    async fn init_connection_internal(app: App) -> Result<(), std::io::Error> {
-        let app_guard = app.lock().await;
-        if app_guard.app_type == AppType::SERVER {
-            println!("it is type server");
-            drop(app_guard);
-            Self::init_connection_server(app.clone()).await?;
+    async fn init_connection_internal(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+        {
+            let app_guard = app.lock().await;
+            if app_guard.app_type == AppType::SERVER {
+                println!("it is type server");
+            } else {
+                println!("it is type client");
+            }
+            // The guard goes out of scope here, so it's automatically dropped.
+        }
+
+        if app.lock().await.app_type == AppType::SERVER {
+            Self::init_connection_server(app).await?;
         } else {
-            drop(app_guard);
-            Self::init_connection_client(app.clone()).await?;
+            Self::init_connection_client(app).await?;
         }
 
         Ok(())
     }
+
     async fn init_connection_client(app: App) -> Result<(), std::io::Error> {
         println!("Connecting to server");
-        let stream = TcpStream::connect("0.0.0.0:8888").await?;
+        let stream = TcpStream::connect("127.0.0.1:8888").await?;
 
         // Accepting an incoming connection
         let (read_stream, write_stream) = stream.into_split();
@@ -131,7 +148,13 @@ impl ChatApp {
     }
 
     async fn init_connection_server(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind("0.0.0.0:8888").await?;
+        let server_addr;
+        {
+            let app_guard = app.lock().await;
+            server_addr = app_guard.server_addr.clone();
+        }
+        let listener = TcpListener::bind(server_addr).await?;
+        // let listener = TcpListener::bind("0.0.0.0:8888").await?;
         println!("Listening for incoming connections");
         let (stream, addr) = listener.accept().await?;
 
@@ -142,31 +165,35 @@ impl ChatApp {
             let app_guard = app.lock().await;
             *app_guard.write_stream.lock().await = Some(write_stream);
         }
-
+        println!("i got past this");
         let app_clone = app.clone();
+        let app_guard = app_clone.lock().await;
+        let rx_clone = app_guard.rx.clone();
+        let chat_history_clone = app_guard.chat_history.clone();
 
         tokio::spawn(async move {
-            let app_guard = app_clone.lock().await;
-            Self::poll_messages(app_guard.rx.clone(), app_guard.chat_history.clone()).await;
+            println!("Polling messages server1");
+            println!("Polling messages server2");
+            Self::poll_messages(rx_clone, chat_history_clone).await;
         });
 
-        let app_guard = app.lock().await;
+        println!("I got to the end");
+
         stream_read(read_stream, app_guard.tx.clone()).await;
 
         Ok(())
     }
 
     async fn poll_messages(rx: Receiver, chat_history: ChatHistory) {
-        println!("Polling messages");
         let mut interval = time::interval(Duration::from_millis(200));
         loop {
             interval.tick().await;
 
-            // Lock the async mutex for receiving messages
             let mut rx = rx.lock().await;
 
             match rx.recv().await {
                 Some(message) => {
+                    println!("Received message: {}", message);
                     // Lock the sync mutex for chat history in a blocking way
                     let mut history = chat_history.lock().unwrap();
                     let message = Message::new(message, false);
@@ -236,6 +263,7 @@ impl eframe::App for ChatApp {
                 ConnectionStatus::DISCONNECTED => "Connect",
                 ConnectionStatus::CONNECTING => "",
                 ConnectionStatus::FAILED => "Retry connect",
+                ConnectionStatus::LISTENING => "Listening on {}",
             };
             if ui.button(button_text).clicked() {
                 self.init_connection();

@@ -22,6 +22,7 @@ impl fmt::Display for ConnectionStatus {
             ConnectionStatus::CONNECTED => write!(f, "Connected"),
             ConnectionStatus::CONNECTING => write!(f, "Connecting"),
             ConnectionStatus::FAILED => write!(f, "Failed"),
+            ConnectionStatus::LISTENING => write!(f, "Listening"),
         }
     }
 }
