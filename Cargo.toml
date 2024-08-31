@@ -9,6 +9,7 @@ crossterm = "0.26"
 eframe = "0.22"
 egui = "0.22"
 futures = "0.3"
+serde_json = "*"
 
 [[bin]]
 name = "server"

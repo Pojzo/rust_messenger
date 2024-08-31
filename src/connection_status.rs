@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(PartialEq, Eq, Clone)]
 pub(crate) enum ConnectionStatus {
     DISCONNECTED,
+    LISTENING,
     CONNECTING,
     CONNECTED,
     FAILED,

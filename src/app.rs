@@ -3,7 +3,7 @@ use std::io;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -13,12 +13,14 @@ use tokio::time::{self, sleep};
 
 use crate::common::AppType;
 use crate::connection_status::ConnectionStatus;
+use crate::message::Message;
 use crate::stream_utils::stream_read;
 
 type ChatHistory = Arc<Mutex<Vec<Message>>>;
 type Sender = Arc<AsyncMutex<mpsc::Sender<String>>>;
 type Receiver = Arc<AsyncMutex<mpsc::Receiver<String>>>;
 type WriteStream = Arc<AsyncMutex<Option<OwnedWriteHalf>>>;
+type App = Arc<AsyncMutex<ChatApp>>;
 
 #[derive(Clone)]
 pub struct ChatApp {
@@ -26,10 +28,12 @@ pub struct ChatApp {
     chat_input: String,
     chat_history: ChatHistory,
     connection_status: ConnectionStatus,
+    log: Vec<String>,
     tx: Sender,
     rx: Receiver,
     write_stream: WriteStream,
     stop_signal: Arc<Notify>,
+    connected_to_addr: String,
 }
 
 impl ChatApp {
@@ -41,47 +45,14 @@ impl ChatApp {
             chat_history: Arc::new(Mutex::new(Vec::new())),
             app_type,
             connection_status: ConnectionStatus::DISCONNECTED,
+            log: Vec::new(),
             tx: Arc::new(AsyncMutex::new(tx)),
             rx: Arc::new(AsyncMutex::new(rx)),
             write_stream: Arc::new(AsyncMutex::new(None)),
             stop_signal: Arc::new(Notify::new()),
+            connected_to_addr: "".to_string(),
         }
     }
-
-    fn init(&self) {
-        let rx = self.rx.clone();
-        let chat_history = self.chat_history.clone();
-
-        // tokio::spawn(async move {
-        //     Self::poll_messages(rx, chat_history).await;
-        // });
-
-        println!("This init was called");
-    }
-
-    pub fn init_connection(&mut self) {
-        self.connection_status = ConnectionStatus::CONNECTING;
-        let app = Arc::new(AsyncMutex::new(self.clone()));
-        let notify = Arc::new(Notify::new());
-        let notify_clone = notify.clone();
-
-        let mut failed = false;
-
-        tokio::spawn(async move {
-            let result = Self::retry_connection(app, notify_clone).await;
-            if let Err(e) = result {
-                eprintln!("Failed to establish connection: {:?}", e);
-                failed = true;
-            }
-        });
-
-        let _ = notify.notified();
-        println!("got after the notify");
-        if failed {
-            self.connection_status = ConnectionStatus::FAILED;
-        }
-    }
-
     async fn retry_connection(
         app: Arc<AsyncMutex<ChatApp>>,
         notify: Arc<Notify>,
@@ -117,23 +88,76 @@ impl ChatApp {
         ))
     }
 
-    async fn init_connection_internal(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
-        // Binding the TcpListener to the address
-        let stream = TcpStream::connect("0.0.0.0:8888").await?;
+    fn init_connection(&self) {
+        let app = Arc::new(AsyncMutex::new(self.clone()));
+        tokio::spawn(async move {
+            println!("Initializing connection");
+            Self::init_connection_internal(app).await;
+        });
+    }
 
-        println!("Listening");
+    async fn init_connection_internal(app: App) -> Result<(), std::io::Error> {
+        let app_guard = app.lock().await;
+        if app_guard.app_type == AppType::SERVER {
+            println!("it is type server");
+            drop(app_guard);
+            Self::init_connection_server(app.clone()).await?;
+        } else {
+            drop(app_guard);
+            Self::init_connection_client(app.clone()).await?;
+        }
+
+        Ok(())
+    }
+    async fn init_connection_client(app: App) -> Result<(), std::io::Error> {
+        println!("Connecting to server");
+        let stream = TcpStream::connect("0.0.0.0:8888").await?;
 
         // Accepting an incoming connection
         let (read_stream, write_stream) = stream.into_split();
+        println!("Connected to server");
         let app = app.lock().await;
         *app.write_stream.lock().await = Some(write_stream);
+        println!("Got after this");
+
+        let app_guard = app.clone();
+        tokio::spawn(async move {
+            Self::poll_messages(app_guard.clone().rx, app_guard.clone().chat_history).await;
+        });
 
         stream_read(read_stream, app.tx.clone()).await;
 
         Ok(())
     }
 
+    async fn init_connection_server(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind("0.0.0.0:8888").await?;
+        println!("Listening for incoming connections");
+        let (stream, addr) = listener.accept().await?;
+
+        let (read_stream, write_stream) = stream.into_split();
+        println!("Accepted connection from: {:?}", addr);
+
+        {
+            let app_guard = app.lock().await;
+            *app_guard.write_stream.lock().await = Some(write_stream);
+        }
+
+        let app_clone = app.clone();
+
+        tokio::spawn(async move {
+            let app_guard = app_clone.lock().await;
+            Self::poll_messages(app_guard.rx.clone(), app_guard.chat_history.clone()).await;
+        });
+
+        let app_guard = app.lock().await;
+        stream_read(read_stream, app_guard.tx.clone()).await;
+
+        Ok(())
+    }
+
     async fn poll_messages(rx: Receiver, chat_history: ChatHistory) {
+        println!("Polling messages");
         let mut interval = time::interval(Duration::from_millis(200));
         loop {
             interval.tick().await;
@@ -170,6 +194,7 @@ impl ChatApp {
         chat_history: &ChatHistory,
         message: &str,
     ) {
+        println!("Sending message");
         // Directly use the write_stream without moving it
         chat_history
             .lock()
@@ -217,7 +242,6 @@ impl eframe::App for ChatApp {
             };
         });
 
-        // Bottom panel for the chat input
         egui::TopBottomPanel::bottom("chat_input_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Message:");
@@ -229,7 +253,6 @@ impl eframe::App for ChatApp {
                         let write_stream_copy = self.write_stream.clone();
                         let chat_history_clone = self.chat_history.clone();
 
-                        /*
                         tokio::spawn(async move {
                             let mut write_stream_guard = write_stream_copy.lock().await;
                             if let Some(write_stream) = &mut *write_stream_guard {
@@ -243,24 +266,11 @@ impl eframe::App for ChatApp {
                                 eprintln!("Write stream is not available");
                             }
                         });
-                        */
 
                         self.chat_input.clear();
                     }
                 }
             });
         });
-    }
-}
-
-#[derive(Clone)]
-struct Message {
-    content: String,
-    sent: bool,
-}
-
-impl Message {
-    fn new(content: String, sent: bool) -> Self {
-        Message { content, sent }
     }
 }
