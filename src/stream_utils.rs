@@ -7,10 +7,7 @@ use tokio::{
 
 use crate::common::get_user_input;
 
-pub async fn stream_read(
-    mut read_stream: OwnedReadHalf,
-    tx: Arc<AsyncMutex<mpsc::Sender<String>>>,
-) {
+pub async fn stream_read(mut read_stream: OwnedReadHalf, tx: Arc<Mutex<mpsc::Sender<String>>>) {
     let mut buffer = [0; 512];
 
     match read_stream.peer_addr() {
@@ -28,7 +25,7 @@ pub async fn stream_read(
                 break;
             }
             Ok(n) => {
-                let tx_guard = tx.lock().await;
+                let tx_guard = tx.lock().unwrap();
                 let message = String::from_utf8_lossy(&buffer[..n]);
                 match tx_guard.send(message.to_string()).await {
                     Ok(_) => {

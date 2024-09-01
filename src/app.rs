@@ -4,8 +4,9 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Handle;
 
-use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tokio::sync::{mpsc, Notify};
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -17,169 +18,185 @@ use crate::message::Message;
 use crate::stream_utils::stream_read;
 
 type ChatHistory = Arc<Mutex<Vec<Message>>>;
-type Sender = Arc<AsyncMutex<mpsc::Sender<String>>>;
-type Receiver = Arc<AsyncMutex<mpsc::Receiver<String>>>;
-type WriteStream = Arc<AsyncMutex<Option<OwnedWriteHalf>>>;
-type App = Arc<AsyncMutex<ChatApp>>;
+type Sender = Arc<Mutex<mpsc::Sender<String>>>;
+type Receiver = Arc<Mutex<mpsc::Receiver<String>>>;
+type WriteStream = Arc<Mutex<Option<OwnedWriteHalf>>>;
+type App = Arc<Mutex<ChatApp>>;
+type SharedStateType = Arc<Mutex<SharedState>>;
+
+#[derive(Clone)]
+struct SharedState {
+    chat_history: ChatHistory,
+    tx: Sender,
+    rx: Receiver,
+    write_stream: WriteStream,
+    server_addr: String,
+    connected_to_addr: String,
+    connection_status: ConnectionStatus,
+}
 
 #[derive(Clone)]
 pub struct ChatApp {
     app_type: AppType,
     chat_input: String,
-    chat_history: ChatHistory,
-    connection_status: ConnectionStatus,
     log: Vec<String>,
-    tx: Sender,
-    rx: Receiver,
-    write_stream: WriteStream,
     stop_signal: Arc<Notify>,
-    server_addr: String,
-    connected_to_addr: String,
+    shared_state: SharedStateType,
 }
 
 impl ChatApp {
     pub fn new(app_type: AppType) -> Self {
         let (tx, rx) = mpsc::channel(32);
-
-        ChatApp {
-            chat_input: String::new(),
+        let shared_state = Arc::new(Mutex::new(SharedState {
             chat_history: Arc::new(Mutex::new(Vec::new())),
-            app_type,
-            connection_status: ConnectionStatus::DISCONNECTED,
-            log: Vec::new(),
-            tx: Arc::new(AsyncMutex::new(tx)),
-            rx: Arc::new(AsyncMutex::new(rx)),
-            write_stream: Arc::new(AsyncMutex::new(None)),
-            stop_signal: Arc::new(Notify::new()),
+            tx: Arc::new(Mutex::new(tx)),
+            rx: Arc::new(Mutex::new(rx)),
+            write_stream: Arc::new(Mutex::new(None)),
             server_addr: "".to_string(),
             connected_to_addr: "".to_string(),
+            connection_status: ConnectionStatus::DISCONNECTED,
+        }));
+
+        ChatApp {
+            app_type,
+            chat_input: String::new(),
+            log: Vec::new(),
+            stop_signal: Arc::new(Notify::new()),
+            shared_state,
         }
     }
-    pub fn set_serer_addr(&mut self, addr: String) -> bool {
-        if self.app_type == AppType::CLIENT {
-            return false;
-        }
-        self.server_addr = addr;
-        return true;
-    }
+    // pub fn set_serer_addr(&mut self, addr: String) -> bool {
+    //     if self.app_type == AppType::CLIENT {
+    //         return false;
+    //     }
+    //     self.server_addr = addr;
+    //     return true;
+    // }
 
-    async fn retry_connection(
-        app: Arc<AsyncMutex<ChatApp>>,
-        notify: Arc<Notify>,
-    ) -> Result<(), io::Error> {
-        let retries_threshold = 5;
-        let retry_delay = Duration::from_secs(2);
+    /*
+       async fn retry_connection(app: App, notify: Arc<Notify>) -> Result<(), io::Error> {
+           let retries_threshold = 5;
+           let retry_delay = Duration::from_secs(2);
 
-        for attempt in 1..=retries_threshold {
-            let app_clone = app.clone();
+           for attempt in 1..=retries_threshold {
+               let app_clone = app.clone();
 
-            // Try to initialize connection
-            let result = Self::init_connection_internal(app_clone).await;
-            if result.is_ok() {
-                println!("Successfully established connection on attempt {}", attempt);
-                notify.notify_one(); // Notify that connection was successful
-                return Ok(());
-            } else {
-                eprintln!(
-                    "Failed to initialize connection on attempt {}: {:?}",
-                    attempt,
-                    result.err().unwrap()
-                );
-                if attempt < retries_threshold {
-                    sleep(retry_delay).await; // Wait before the next attempt
-                }
-            }
-        }
-        notify.notify_one();
+               // Try to initialize connection
+               let result = Self::init_connection_internal(app_clone).await;
+               if result.is_ok() {
+                   println!("Successfully established connection on attempt {}", attempt);
+                   notify.notify_one(); // Notify that connection was successful
+                   return Ok(());
+               } else {
+                   eprintln!(
+                       "Failed to initialize connection on attempt {}: {:?}",
+                       attempt,
+                       result.err().unwrap()
+                   );
+                   if attempt < retries_threshold {
+                       sleep(retry_delay).await; // Wait before the next attempt
+                   }
+               }
+           }
+           notify.notify_one();
 
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to establish connection after maximum retries",
-        ))
-    }
+           Err(io::Error::new(
+               io::ErrorKind::Other,
+               "Failed to establish connection after maximum retries",
+           ))
+       }
+    */
 
     fn init_connection(&self) {
-        let app = Arc::new(AsyncMutex::new(self.clone()));
+        let shared_state_clone = self.shared_state.clone();
+        let app_type = self.app_type.clone();
         tokio::spawn(async move {
             println!("Initializing connection");
-            Self::init_connection_internal(app).await;
+            Self::init_connection_internal(shared_state_clone, app_type).await;
         });
     }
 
-    async fn init_connection_internal(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+    async fn init_connection_internal(
+        shared_state: SharedStateType,
+        app_type: AppType,
+    ) -> Result<(), std::io::Error> {
         {
-            let app_guard = app.lock().await;
-            if app_guard.app_type == AppType::SERVER {
-                println!("it is type server");
-            } else {
-                println!("it is type client");
-            }
-            // The guard goes out of scope here, so it's automatically dropped.
+            let mut shared_state_guard = shared_state.lock().unwrap();
+            shared_state_guard.connection_status = ConnectionStatus::CONNECTED;
         }
 
-        if app.lock().await.app_type == AppType::SERVER {
-            Self::init_connection_server(app).await?;
+        if app_type == AppType::SERVER {
+            Self::init_connection_server(shared_state).await?;
         } else {
-            Self::init_connection_client(app).await?;
+            Self::init_connection_client(shared_state).await?;
         }
 
         Ok(())
     }
 
-    async fn init_connection_client(app: App) -> Result<(), std::io::Error> {
+    async fn init_connection_client(shared_state: SharedStateType) -> Result<(), std::io::Error> {
         println!("Connecting to server");
         let stream = TcpStream::connect("127.0.0.1:8888").await?;
 
         // Accepting an incoming connection
         let (read_stream, write_stream) = stream.into_split();
         println!("Connected to server");
-        let app = app.lock().await;
-        *app.write_stream.lock().await = Some(write_stream);
-        println!("Got after this");
+        let shared_state_guard = shared_state.lock().unwrap();
+        *shared_state_guard.write_stream.lock().unwrap() = Some(write_stream);
 
-        let app_guard = app.clone();
+        let app_guard = shared_state_guard.clone();
         tokio::spawn(async move {
             Self::poll_messages(app_guard.clone().rx, app_guard.clone().chat_history).await;
         });
 
-        stream_read(read_stream, app.tx.clone()).await;
+        stream_read(read_stream, shared_state_guard.tx.clone()).await;
 
         Ok(())
     }
 
-    async fn init_connection_server(app: Arc<AsyncMutex<ChatApp>>) -> Result<(), std::io::Error> {
+    async fn init_connection_server(shared_state: SharedStateType) -> Result<(), std::io::Error> {
         let server_addr;
         {
-            let app_guard = app.lock().await;
-            server_addr = app_guard.server_addr.clone();
+            let mut shared_state_guard = shared_state.lock().unwrap();
+            server_addr = shared_state_guard.server_addr.clone();
+            shared_state_guard.connection_status = ConnectionStatus::LISTENING;
+            println!(
+                "Set connection status to {}",
+                shared_state_guard.connection_status
+            );
         }
         let listener = TcpListener::bind(server_addr).await?;
+
         // let listener = TcpListener::bind("0.0.0.0:8888").await?;
         println!("Listening for incoming connections");
         let (stream, addr) = listener.accept().await?;
 
+        {
+            let mut app_guard = shared_state.lock().unwrap();
+            app_guard.connected_to_addr = addr.to_string();
+            app_guard.connection_status = ConnectionStatus::CONNECTED;
+        }
+
         let (read_stream, write_stream) = stream.into_split();
         println!("Accepted connection from: {:?}", addr);
-
         {
-            let app_guard = app.lock().await;
-            *app_guard.write_stream.lock().await = Some(write_stream);
+            let app_guard = shared_state.lock().unwrap();
+            println!("Connection type here: {}", app_guard.connection_status);
+            *app_guard.write_stream.lock().unwrap() = Some(write_stream);
         }
-        println!("i got past this");
-        let app_clone = app.clone();
-        let app_guard = app_clone.lock().await;
-        let rx_clone = app_guard.rx.clone();
-        let chat_history_clone = app_guard.chat_history.clone();
-
+        let shared_state_clone = shared_state.clone();
         tokio::spawn(async move {
-            println!("Polling messages server1");
-            println!("Polling messages server2");
+            let shared_state_guard = shared_state_clone.lock().unwrap();
+            let rx_clone = shared_state_guard.rx.clone();
+            let chat_history_clone = shared_state_guard.chat_history.clone();
+            drop(shared_state_guard); // Ensure the lock is released before polling messages
             Self::poll_messages(rx_clone, chat_history_clone).await;
         });
 
-        println!("I got to the end");
-
-        stream_read(read_stream, app_guard.tx.clone()).await;
+        {
+            let shared_state_guard = shared_state.lock().unwrap();
+            stream_read(read_stream, shared_state_guard.tx.clone()).await;
+        }
 
         Ok(())
     }
@@ -189,7 +206,7 @@ impl ChatApp {
         loop {
             interval.tick().await;
 
-            let mut rx = rx.lock().await;
+            let mut rx = rx.lock().unwrap();
 
             match rx.recv().await {
                 Some(message) => {
@@ -206,14 +223,16 @@ impl ChatApp {
 
     fn get_chat_history(&self) -> Vec<Message> {
         // Attempt to acquire the lock and handle potential errors
-        match self.chat_history.lock() {
-            Ok(history) => history.clone(),
-            Err(_) => {
-                // Handle the error gracefully, e.g., return an empty history
-                eprintln!("Failed to acquire lock on chat history");
-                Vec::new()
-            }
-        }
+        let handle = Handle::current();
+        handle.block_on(async {
+            let shared_state_guard = self.shared_state.lock().await;
+            shared_state_guard
+                .clone()
+                .chat_history
+                .lock()
+                .unwrap()
+                .clone()
+        })
     }
 
     async fn send_message(
@@ -221,7 +240,6 @@ impl ChatApp {
         chat_history: &ChatHistory,
         message: &str,
     ) {
-        println!("Sending message");
         // Directly use the write_stream without moving it
         chat_history
             .lock()
@@ -258,6 +276,7 @@ impl eframe::App for ChatApp {
         egui::SidePanel::right("Status panel").show(ctx, |ui| {
             ui.heading("Connection status");
             ui.label(&self.connection_status.to_string());
+
             let button_text = match self.connection_status {
                 ConnectionStatus::CONNECTED => "Disconnect",
                 ConnectionStatus::DISCONNECTED => "Connect",
@@ -265,6 +284,17 @@ impl eframe::App for ChatApp {
                 ConnectionStatus::FAILED => "Retry connect",
                 ConnectionStatus::LISTENING => "Listening on {}",
             };
+
+            let connection_text: String;
+            match self.app_type {
+                AppType::SERVER => {
+                    connection_text = self.connected_to_addr.clone();
+                }
+                AppType::CLIENT => {
+                    connection_text = format!("Connected to {}", self.connected_to_addr);
+                }
+            }
+            ui.label(connection_text);
             if ui.button(button_text).clicked() {
                 self.init_connection();
             };
