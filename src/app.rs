@@ -134,17 +134,22 @@ impl ChatApp {
             tx_guard.send(listening_message).await.unwrap();
         }
 
-        let (stream, addr) = listener.accept().await?;
-
-        println!("Accepted connection from: {:?}", addr);
-
-        handle_connection(
-            stream,
-            tx_stream.clone(),
-            rx_stream.clone(),
-            disconnect_notify,
-        )
-        .await;
+        tokio::select! {
+            Ok((stream, _addr)) = listener.accept() => {
+                handle_connection(
+                    stream,
+                    tx_stream.clone(),
+                    rx_stream.clone(),
+                    disconnect_notify,
+                )
+                .await;
+            }
+            _ = disconnect_notify.notified() => {
+                let tx_guard = tx_stream.lock().await;
+                let disconnect_message = construct_connection_message(ConnectionStatus::DISCONNECTED);
+                tx_guard.send(disconnect_message).await.unwrap();
+            }
+        }
 
         Ok(())
     }
@@ -249,10 +254,22 @@ impl ChatApp {
 
             let button_text = match self.connection_status {
                 ConnectionStatus::CONNECTED => "Disconnect",
-                ConnectionStatus::DISCONNECTED => "Connect",
+                ConnectionStatus::DISCONNECTED => {
+                    if self.app_type == AppType::SERVER {
+                        "Start server"
+                    } else {
+                        "Connect"
+                    }
+                }
                 ConnectionStatus::CONNECTING => "",
                 ConnectionStatus::FAILED => "Retry connect",
-                ConnectionStatus::LISTENING => "Listening on {}",
+                ConnectionStatus::LISTENING => {
+                    if self.app_type == AppType::SERVER {
+                        "Stop listening"
+                    } else {
+                        ""
+                    }
+                }
             };
 
             let connection_text: String;
@@ -273,7 +290,9 @@ impl ChatApp {
                     ConnectionStatus::DISCONNECTED => {
                         self.init_connection();
                     }
-                    ConnectionStatus::LISTENING => todo!(),
+                    ConnectionStatus::LISTENING => {
+                        self.disconect_notify.notify_waiters();
+                    }
                     ConnectionStatus::CONNECTING => todo!(),
                     ConnectionStatus::FAILED => todo!(),
                 }
