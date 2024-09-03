@@ -9,9 +9,12 @@ use std::sync::Mutex as StdMutex;
 use tokio::time::{self, sleep};
 
 use crate::common::AppType;
-use crate::connection_status::ConnectionStatus;
-use crate::message::{CombinedMessage, LogMessage, Message, TextMessage};
-use crate::stream_utils::{stream_read, stream_write};
+use crate::connection_status::{self, ConnectionStatus};
+use crate::message::{
+    construct_connection_message, construct_text_message, CombinedMessage, LogMessage, Message,
+    TextMessage,
+};
+use crate::stream_utils::{handle_connection, stream_read, stream_write};
 
 type ChatHistory = Arc<StdMutex<Vec<Message>>>;
 type Log = Arc<StdMutex<Vec<LogMessage>>>;
@@ -37,6 +40,7 @@ pub struct ChatApp {
     server_addr: String,
     connected_to_addr: String,
     connection_status: ConnectionStatus,
+    disconect_notify: Arc<Notify>,
 }
 
 impl ChatApp {
@@ -56,6 +60,7 @@ impl ChatApp {
             server_addr: "".to_string(),
             connected_to_addr: "".to_string(),
             connection_status: ConnectionStatus::DISCONNECTED,
+            disconect_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -63,10 +68,11 @@ impl ChatApp {
         let app_type = self.app_type.clone();
         let tx_stream_clone = self.tx_stream.clone();
         let rx_stream_clone = self.rx_stream.clone();
-
+        let notify_clone = self.disconect_notify.clone();
         tokio::spawn(async move {
             println!("Initializing connection");
-            Self::init_connection_internal(app_type, tx_stream_clone, rx_stream_clone).await;
+            Self::init_connection_internal(app_type, tx_stream_clone, rx_stream_clone, notify_clone)
+                .await
         });
 
         let cache = self.chat_history.clone();
@@ -81,11 +87,12 @@ impl ChatApp {
         app_type: AppType,
         tx: AsyncSender,
         rx: AsyncReceiver,
+        disconnect_notify: Arc<Notify>,
     ) -> Result<(), std::io::Error> {
         if app_type == AppType::SERVER {
-            Self::init_connection_server(tx.clone(), rx.clone()).await?;
+            Self::init_connection_server(tx.clone(), rx.clone(), disconnect_notify).await?;
         } else {
-            Self::init_connection_client(tx.clone(), rx.clone()).await?;
+            Self::init_connection_client(tx.clone(), rx.clone(), disconnect_notify).await?;
         }
 
         Ok(())
@@ -94,17 +101,19 @@ impl ChatApp {
     async fn init_connection_client(
         tx_stream: AsyncSender,
         rx_stream: AsyncReceiver,
+        disconnect_notify: Arc<Notify>,
     ) -> Result<(), std::io::Error> {
         println!("Connecting to server");
+
         let stream = TcpStream::connect("127.0.0.1:8888").await?;
 
-        // Accepting an incoming connection
-        let (read_stream, write_stream) = stream.into_split();
-
-        tokio::join!(
-            stream_read(read_stream, tx_stream.clone()),
-            stream_write(write_stream, rx_stream.clone())
-        );
+        handle_connection(
+            stream,
+            tx_stream.clone(),
+            rx_stream.clone(),
+            disconnect_notify,
+        )
+        .await;
 
         Ok(())
     }
@@ -112,21 +121,30 @@ impl ChatApp {
     async fn init_connection_server(
         tx_stream: AsyncSender,
         rx_stream: AsyncReceiver,
+        disconnect_notify: Arc<Notify>,
     ) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind("0.0.0.0:8888").await?;
 
         // let listener = TcpListener::bind("0.0.0.0:8888").await?;
         println!("Listening for incoming connections");
-        let (stream, addr) = listener.accept().await?;
+        {
+            let listening_message =
+                construct_connection_message(connection_status::ConnectionStatus::LISTENING);
+            let tx_guard = tx_stream.lock().await;
+            tx_guard.send(listening_message).await.unwrap();
+        }
 
-        let (read_stream, write_stream) = stream.into_split();
+        let (stream, addr) = listener.accept().await?;
 
         println!("Accepted connection from: {:?}", addr);
 
-        tokio::join!(
-            stream_read(read_stream, tx_stream.clone()),
-            stream_write(write_stream, rx_stream.clone())
-        );
+        handle_connection(
+            stream,
+            tx_stream.clone(),
+            rx_stream.clone(),
+            disconnect_notify,
+        )
+        .await;
 
         Ok(())
     }
@@ -137,18 +155,13 @@ impl ChatApp {
         match tx_input
             .lock()
             .await
-            .send(CombinedMessage::Message(Message::TextMessage(
-                TextMessage {
-                    content: message,
-                    sent: true,
-                },
-            )))
+            .send(construct_text_message(message, true))
             .await
         {
             Ok(_) => {
                 println!("Message sent");
-                let mut cache = chat_history.lock().unwrap();
-                cache.push(Message::TextMessage({
+                let mut chat_history = chat_history.lock().unwrap();
+                chat_history.push(Message::TextMessage({
                     TextMessage {
                         content: message_clone,
                         sent: true,
@@ -179,6 +192,14 @@ impl ChatApp {
 
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.show_chat_history_panel(ctx);
+        self.show_status_panel(ctx);
+        self.show_chat_input_panel(ctx);
+    }
+}
+
+impl ChatApp {
+    fn show_chat_history_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("chat_history_panel").show(ctx, |ui| {
             ui.heading("Chat History:");
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -196,7 +217,6 @@ impl eframe::App for ChatApp {
                     }
                 }
 
-                // filter only TextMessage
                 let history_guard: Vec<&TextMessage> = history_guard
                     .iter()
                     .filter_map(|message| match message {
@@ -220,6 +240,9 @@ impl eframe::App for ChatApp {
                 }
             });
         });
+    }
+
+    fn show_status_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("Status panel").show(ctx, |ui| {
             ui.heading("Connection status");
             ui.label(&self.connection_status.to_string());
@@ -243,10 +266,23 @@ impl eframe::App for ChatApp {
             }
             ui.label(connection_text);
             if ui.button(button_text).clicked() {
+                match self.connection_status {
+                    ConnectionStatus::CONNECTED => {
+                        self.disconect_notify.notify_waiters();
+                    }
+                    ConnectionStatus::DISCONNECTED => {
+                        self.init_connection();
+                    }
+                    ConnectionStatus::LISTENING => todo!(),
+                    ConnectionStatus::CONNECTING => todo!(),
+                    ConnectionStatus::FAILED => todo!(),
+                }
                 self.init_connection();
             };
         });
+    }
 
+    fn show_chat_input_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("chat_input_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Message:");
@@ -259,7 +295,6 @@ impl eframe::App for ChatApp {
                     tokio::spawn(async {
                         Self::send_message(tx_input, message, chat_history).await;
                     });
-                } else {
                 }
             });
         });
