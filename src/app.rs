@@ -1,4 +1,5 @@
 use eframe::egui;
+use std::fmt::format;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
@@ -6,7 +7,6 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 use std::sync::Mutex as StdMutex;
-use tokio::time::{self, sleep};
 
 use crate::common::AppType;
 use crate::connection_status::{self, ConnectionStatus};
@@ -28,7 +28,6 @@ type App = Arc<StdMutex<ChatApp>>;
 pub struct ChatApp {
     app_type: AppType,
     chat_input: String,
-    stop_signal: Arc<Notify>,
     chat_history: ChatHistory,
 
     tx_input: AsyncSender,
@@ -51,7 +50,6 @@ impl ChatApp {
             app_type,
             chat_input: String::new(),
             log: Arc::new(StdMutex::new(Vec::new())),
-            stop_signal: Arc::new(Notify::new()),
             chat_history: Arc::new(StdMutex::new(Vec::new())),
             tx_input: Arc::new(AsyncMutex::new(tx_input)),
             rx_input: Arc::new(AsyncMutex::new(rx_input)),
@@ -69,10 +67,16 @@ impl ChatApp {
         let tx_stream_clone = self.tx_stream.clone();
         let rx_stream_clone = self.rx_stream.clone();
         let notify_clone = self.disconect_notify.clone();
+        let server_addr_clone = self.server_addr.clone();
         tokio::spawn(async move {
-            println!("Initializing connection");
-            Self::init_connection_internal(app_type, tx_stream_clone, rx_stream_clone, notify_clone)
-                .await
+            Self::init_connection_internal(
+                app_type,
+                tx_stream_clone,
+                rx_stream_clone,
+                notify_clone,
+                server_addr_clone,
+            )
+            .await
         });
 
         let cache = self.chat_history.clone();
@@ -88,11 +92,14 @@ impl ChatApp {
         tx: AsyncSender,
         rx: AsyncReceiver,
         disconnect_notify: Arc<Notify>,
+        server_addr: String,
     ) -> Result<(), std::io::Error> {
         if app_type == AppType::SERVER {
-            Self::init_connection_server(tx.clone(), rx.clone(), disconnect_notify).await?;
+            Self::init_connection_server(tx.clone(), rx.clone(), disconnect_notify, server_addr)
+                .await?;
         } else {
-            Self::init_connection_client(tx.clone(), rx.clone(), disconnect_notify).await?;
+            Self::init_connection_client(tx.clone(), rx.clone(), disconnect_notify, server_addr)
+                .await?;
         }
 
         Ok(())
@@ -102,10 +109,11 @@ impl ChatApp {
         tx_stream: AsyncSender,
         rx_stream: AsyncReceiver,
         disconnect_notify: Arc<Notify>,
+        server_addr: String,
     ) -> Result<(), std::io::Error> {
         println!("Connecting to server");
 
-        let stream = TcpStream::connect("127.0.0.1:8888").await?;
+        let stream = TcpStream::connect(server_addr).await?;
 
         handle_connection(
             stream,
@@ -118,18 +126,31 @@ impl ChatApp {
         Ok(())
     }
 
+    pub fn set_server_addr(&mut self, server_addr: String) {
+        self.server_addr = server_addr;
+    }
+
     async fn init_connection_server(
         tx_stream: AsyncSender,
         rx_stream: AsyncReceiver,
         disconnect_notify: Arc<Notify>,
+        server_addr: String,
     ) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind("0.0.0.0:8888").await?;
+        println!("Starting server");
+        let listener = match TcpListener::bind(server_addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                println!("Failed to bind to port");
+                return Err(e);
+            }
+        };
 
         // let listener = TcpListener::bind("0.0.0.0:8888").await?;
         println!("Listening for incoming connections");
         {
             let listening_message =
                 construct_connection_message(connection_status::ConnectionStatus::LISTENING);
+            println!("Waiting for tx_stream lock");
             let tx_guard = tx_stream.lock().await;
             tx_guard.send(listening_message).await.unwrap();
         }
@@ -141,10 +162,10 @@ impl ChatApp {
                     tx_stream.clone(),
                     rx_stream.clone(),
                     disconnect_notify,
-                )
-                .await;
+                ).await
             }
             _ = disconnect_notify.notified() => {
+                println!("I too have been received that");
                 let tx_guard = tx_stream.lock().await;
                 let disconnect_message = construct_connection_message(ConnectionStatus::DISCONNECTED);
                 tx_guard.send(disconnect_message).await.unwrap();
@@ -195,17 +216,9 @@ impl ChatApp {
     }
 }
 
-impl eframe::App for ChatApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.show_chat_history_panel(ctx);
-        self.show_status_panel(ctx);
-        self.show_chat_input_panel(ctx);
-    }
-}
-
 impl ChatApp {
     fn show_chat_history_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("chat_history_panel").show(ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Chat History:");
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let history_clone = self.chat_history.clone();
@@ -250,7 +263,13 @@ impl ChatApp {
     fn show_status_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("Status panel").show(ctx, |ui| {
             ui.heading("Connection status");
-            ui.label(&self.connection_status.to_string());
+
+            ui.horizontal(|ui| {
+                ui.label("Server Address:");
+            });
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut self.server_addr);
+            });
 
             let button_text = match self.connection_status {
                 ConnectionStatus::CONNECTED => "Disconnect",
@@ -272,14 +291,36 @@ impl ChatApp {
                 }
             };
 
-            let connection_text: String;
+            let mut connection_text = String::new();
             match self.app_type {
-                AppType::SERVER => {
-                    connection_text = self.connected_to_addr.clone();
-                }
-                AppType::CLIENT => {
-                    connection_text = format!("Connected to {}", self.connected_to_addr);
-                }
+                AppType::SERVER => match self.connection_status {
+                    ConnectionStatus::CONNECTED => {
+                        connection_text = "Connected".to_string();
+                    }
+                    ConnectionStatus::DISCONNECTED => {
+                        connection_text = "Disconnected".to_string();
+                    }
+                    ConnectionStatus::LISTENING => {
+                        connection_text = format!("Listening on {}", self.server_addr);
+                    }
+                    _ => {}
+                },
+
+                AppType::CLIENT => match self.connection_status {
+                    ConnectionStatus::CONNECTED => {
+                        connection_text = format!("Connected to {}", self.server_addr);
+                    }
+                    ConnectionStatus::DISCONNECTED => {
+                        connection_text = "Disconnected".to_string();
+                    }
+                    ConnectionStatus::CONNECTING => {
+                        connection_text = "Connecting...".to_string();
+                    }
+                    ConnectionStatus::FAILED => {
+                        connection_text = "Failed to connect".to_string();
+                    }
+                    _ => {}
+                },
             }
             ui.label(connection_text);
             if ui.button(button_text).clicked() {
@@ -296,7 +337,6 @@ impl ChatApp {
                     ConnectionStatus::CONNECTING => todo!(),
                     ConnectionStatus::FAILED => todo!(),
                 }
-                self.init_connection();
             };
         });
     }
@@ -317,5 +357,17 @@ impl ChatApp {
                 }
             });
         });
+    }
+}
+
+impl eframe::App for ChatApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                self.show_chat_history_panel(ctx);
+                self.show_status_panel(ctx);
+            });
+        });
+        self.show_chat_input_panel(ctx);
     }
 }
