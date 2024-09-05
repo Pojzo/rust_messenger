@@ -9,8 +9,7 @@ use tokio::{
 use crate::{
     connection_status::ConnectionStatus,
     message::{
-        construct_connection_message, construct_text_message, CombinedMessage, ConnectionMessage,
-        LogMessage, Message, TextMessage,
+        construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
     },
 };
 
@@ -77,6 +76,7 @@ pub async fn stream_read(
                 match result {
                     Ok(0) => {
                         println!("Connection closed by the client.");
+                        handle_disconnect(&tx, &disconnect_notify).await;
                         break;
                     }
                     Ok(n) => {
@@ -85,15 +85,12 @@ pub async fn stream_read(
                         println!("Read {} bytes: {}", n, content);
 
                         if content.trim() == "<DISCONNECT>" {
-                            let disconnect_message = construct_connection_message(ConnectionStatus::DISCONNECTED);
-                            tx_guard.send(disconnect_message).await.unwrap();
                             println!("Received disconnect message");
-
-                            disconnect_notify.notify_one();
+                            handle_disconnect(&tx, &disconnect_notify).await;
                             break;
                         }
 
-                        let message = construct_text_message(content.clone(), false);
+                        let message = construct_text_message_generic(content.clone(), false);
 
                         match tx_guard.send(message).await {
                             Ok(_) => {}
@@ -109,15 +106,22 @@ pub async fn stream_read(
                 }
             }
             _ = disconnect_notify.notified() => {
-                    let disconnect_message =
-                    construct_connection_message(ConnectionStatus::DISCONNECTED);
-                    let tx_guard = tx.lock().await;
-                    tx_guard.send(disconnect_message).await.unwrap();
-                    println!("Sending disconnect message to UI ");
-                    break;
+                println!("Sending disconnect message to UI ");
+                handle_disconnect(&tx, &disconnect_notify).await;
+                break;
             }
         }
     }
+}
+
+async fn handle_disconnect(
+    tx: &Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
+    disconnect_notify: &Arc<Notify>,
+) {
+    let disconnect_message = construct_connection_message(ConnectionStatus::DISCONNECTED);
+    let tx_guard = tx.lock().await;
+    tx_guard.send(disconnect_message).await.unwrap();
+    disconnect_notify.notify_one();
 }
 
 pub async fn stream_write(
@@ -169,4 +173,56 @@ pub async fn stream_write(
             }
         }
     }
+}
+
+fn to_4bit_string(value: u8) -> String {
+    let four_bit_value = value & 0x0F;
+
+    format!("{:04b}", four_bit_value)
+}
+
+fn to_20bit_string(value: u32) -> String {
+    let twenty_bit_value = value & 0x0FFFFF;
+
+    format!("{:020b}", twenty_bit_value)
+}
+
+fn pad_payload(content: String, chunk_size: usize) -> String {
+    let msg_len = content.len();
+    let padded_message_len = msg_len + chunk_size - msg_len % chunk_size;
+    let offset = padded_message_len - msg_len;
+
+    let offset_bits = to_4bit_string(offset as u8);
+    let payload_message_len = to_20bit_string(padded_message_len as u32);
+
+    let mut padded_content = content.clone();
+    for _ in 0..offset {
+        padded_content.push('0');
+    }
+
+    format!("{}{}{}", payload_message_len, offset_bits, padded_content)
+}
+
+// version: u4
+pub fn construct_payload(version: u8, msg_type: Message, content: String) -> String {
+    let version_bits = to_4bit_string(version);
+    let msg_type_bits = match msg_type {
+        Message::TextMessage(_) => "0000".to_string(),
+    };
+    let msg_len = content.len();
+    let CHUNK_SIZE = 16;
+    // offset is the value after padding the message length to 16 bits
+    let padded_message_len = msg_len + 16 - msg_len % CHUNK_SIZE;
+    let offset = padded_message_len - msg_len;
+
+    let offset_bits = to_4bit_string(offset as u8);
+    let padded_message = pad_payload(content, CHUNK_SIZE);
+    let payload_message_len_with_offset = to_20bit_string(padded_message_len as u32);
+
+    let final_message = format!(
+        "{}{}{}{}{}",
+        version_bits, msg_type_bits, payload_message_len_with_offset, offset_bits, padded_message
+    );
+
+    final_message
 }

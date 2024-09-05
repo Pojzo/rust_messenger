@@ -11,8 +11,8 @@ use std::sync::Mutex as StdMutex;
 use crate::common::AppType;
 use crate::connection_status::{self, ConnectionStatus};
 use crate::message::{
-    construct_connection_message, construct_text_message, CombinedMessage, LogMessage, Message,
-    TextMessage,
+    construct_connection_message, construct_text_message, construct_text_message_generic,
+    CombinedMessage, LogMessage, Message, TextMessage,
 };
 use crate::stream_utils::{handle_connection, stream_read, stream_write};
 
@@ -113,7 +113,23 @@ impl ChatApp {
     ) -> Result<(), std::io::Error> {
         println!("Connecting to server");
 
-        let stream = TcpStream::connect(server_addr).await?;
+        let server_addr_clone = server_addr.clone();
+
+        let stream = match TcpStream::connect(server_addr).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                println!("Failed to connect to server {}", e);
+                return Err(e);
+            }
+        };
+        println!("Connected to server {}", server_addr_clone);
+
+        {
+            let connect_message =
+                construct_connection_message(connection_status::ConnectionStatus::CONNECTED);
+            let tx_guard = tx_stream.lock().await;
+            tx_guard.send(connect_message).await.unwrap();
+        }
 
         handle_connection(
             stream,
@@ -136,8 +152,9 @@ impl ChatApp {
         disconnect_notify: Arc<Notify>,
         server_addr: String,
     ) -> Result<(), std::io::Error> {
-        println!("Starting server");
-        let listener = match TcpListener::bind(server_addr).await {
+        println!("Starting server on {}", server_addr);
+        // let listener = match TcpListener::bind(server_addr).await {
+        let listener = match TcpListener::bind("0.0.0.0:8888").await {
             Ok(listener) => listener,
             Err(e) => {
                 println!("Failed to bind to port");
@@ -145,7 +162,6 @@ impl ChatApp {
             }
         };
 
-        // let listener = TcpListener::bind("0.0.0.0:8888").await?;
         println!("Listening for incoming connections");
         {
             let listening_message =
@@ -181,22 +197,19 @@ impl ChatApp {
         match tx_input
             .lock()
             .await
-            .send(construct_text_message(message, true))
+            .send(construct_text_message_generic(message, true))
             .await
         {
             Ok(_) => {
                 println!("Message sent");
                 let mut chat_history = chat_history.lock().unwrap();
-                chat_history.push(Message::TextMessage({
-                    TextMessage {
-                        content: message_clone,
-                        sent: true,
-                    }
-                }));
+                let new_message = construct_text_message(message_clone, true);
+                chat_history.push(new_message);
             }
             Err(_) => println!("Failed to send message"),
         }
     }
+
     // Async function to poll for messages and update the synchronous cache
     async fn poll_messages(rx: AsyncReceiver, cache: ChatHistory, log: Log) {
         while let Some(generic_message) = rx.lock().await.recv().await {
@@ -245,13 +258,15 @@ impl ChatApp {
 
                 for message_struct in history_guard {
                     let message = message_struct.content.clone();
+                    let time_sent = message_struct.time_sent.clone();
+                    let full_message = format!("{}: {}", time_sent, message);
                     let color = if message_struct.sent {
                         (255, 0, 0)
                     } else {
                         (0, 255, 0)
                     };
                     ui.label(
-                        egui::RichText::new(message)
+                        egui::RichText::new(full_message)
                             .heading()
                             .color(egui::Color32::from_rgb(color.0, color.1, color.2)),
                     );
@@ -348,7 +363,9 @@ impl ChatApp {
                 ui.text_edit_singleline(&mut self.chat_input);
 
                 let message = self.chat_input.clone();
-                if ui.button("Send").clicked() {
+                if self.connection_status == ConnectionStatus::CONNECTED
+                    && ui.button("Send").clicked()
+                {
                     let tx_input = self.tx_input.clone();
                     let chat_history = self.chat_history.clone();
                     tokio::spawn(async {
