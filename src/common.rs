@@ -1,5 +1,6 @@
-use tokio::io::{self, AsyncBufReadExt, BufReader};
+// use tokio::io::{self, AsyncBufReadExt, BufReader};
 
+/*
 pub(crate) async fn get_user_input() -> io::Result<String> {
     let mut buffer = String::new();
     let stdin = io::stdin();
@@ -12,6 +13,7 @@ pub(crate) async fn get_user_input() -> io::Result<String> {
 
     Ok(buffer)
 }
+    */
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum AppType {

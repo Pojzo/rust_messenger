@@ -1,5 +1,4 @@
-use egui::plot::Text;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -49,6 +48,7 @@ pub async fn handle_connection(
     }
     println!("Got to the end of the connection handler");
 }
+
 pub async fn handle_disconnect_from_source(
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
@@ -210,13 +210,13 @@ pub fn construct_payload(version: u8, msg_type: Message, content: String) -> Str
         Message::TextMessage(_) => "0000".to_string(),
     };
     let msg_len = content.len();
-    let CHUNK_SIZE = 16;
+    let chunk_size = 16;
     // offset is the value after padding the message length to 16 bits
-    let padded_message_len = msg_len + 16 - msg_len % CHUNK_SIZE;
+    let padded_message_len = msg_len + 16 - msg_len % chunk_size;
     let offset = padded_message_len - msg_len;
 
     let offset_bits = to_4bit_string(offset as u8);
-    let padded_message = pad_payload(content, CHUNK_SIZE);
+    let padded_message = pad_payload(content, chunk_size);
     let payload_message_len_with_offset = to_20bit_string(padded_message_len as u32);
 
     let final_message = format!(

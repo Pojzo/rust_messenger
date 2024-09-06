@@ -57,3 +57,4 @@ pub fn construct_connection_message(connection_status: ConnectionStatus) -> Comb
         connection_status,
     }))
 }
+

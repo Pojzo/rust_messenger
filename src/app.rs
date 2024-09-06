@@ -1,8 +1,6 @@
 use eframe::egui;
-use std::fmt::format;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Handle;
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -14,15 +12,14 @@ use crate::message::{
     construct_connection_message, construct_text_message, construct_text_message_generic,
     CombinedMessage, LogMessage, Message, TextMessage,
 };
-use crate::stream_utils::{handle_connection, stream_read, stream_write};
+
+use crate::stream_utils::handle_connection;
 
 type ChatHistory = Arc<StdMutex<Vec<Message>>>;
 type Log = Arc<StdMutex<Vec<LogMessage>>>;
 
 type AsyncSender = Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>;
 type AsyncReceiver = Arc<AsyncMutex<mpsc::Receiver<CombinedMessage>>>;
-
-type App = Arc<StdMutex<ChatApp>>;
 
 #[derive(Clone)]
 pub struct ChatApp {
@@ -37,7 +34,6 @@ pub struct ChatApp {
     log: Log,
 
     server_addr: String,
-    connected_to_addr: String,
     connection_status: ConnectionStatus,
     disconect_notify: Arc<Notify>,
 }
@@ -56,7 +52,6 @@ impl ChatApp {
             tx_stream: Arc::new(AsyncMutex::new(tx_stream)),
             rx_stream: Arc::new(AsyncMutex::new(rx_stream)),
             server_addr: "".to_string(),
-            connected_to_addr: "".to_string(),
             connection_status: ConnectionStatus::DISCONNECTED,
             disconect_notify: Arc::new(Notify::new()),
         }
@@ -252,7 +247,6 @@ impl ChatApp {
                     .iter()
                     .filter_map(|message| match message {
                         Message::TextMessage(text_message) => Some(text_message),
-                        _ => None,
                     })
                     .collect();
 
@@ -380,7 +374,7 @@ impl ChatApp {
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal(|_ui| {
                 self.show_chat_history_panel(ctx);
                 self.show_status_panel(ctx);
             });
