@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 use std::sync::Mutex as StdMutex;
 
-use crate::common::AppType;
+use crate::enums::app_type::AppType;
 use crate::enums::connection_status::{self, ConnectionStatus};
 use crate::enums::message::{
     construct_connection_message, construct_text_message, construct_text_message_generic,
