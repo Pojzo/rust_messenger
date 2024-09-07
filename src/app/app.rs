@@ -7,13 +7,12 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 use std::sync::Mutex as StdMutex;
 
 use crate::common::AppType;
-use crate::connection_status::{self, ConnectionStatus};
-use crate::message::{
+use crate::enums::connection_status::{self, ConnectionStatus};
+use crate::enums::message::{
     construct_connection_message, construct_text_message, construct_text_message_generic,
     CombinedMessage, LogMessage, Message, TextMessage,
 };
-
-use crate::stream_utils::handle_connection;
+use crate::network::network_utils::handle_connection;
 
 type ChatHistory = Arc<StdMutex<Vec<Message>>>;
 type Log = Arc<StdMutex<Vec<LogMessage>>>;

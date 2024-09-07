@@ -1,11 +1,11 @@
-use app::ChatApp;
-use common::AppType;
+use enums::app_type::AppType;
+
+use crate::app::app::ChatApp;
 
 mod app;
-mod common;
-mod connection_status;
-mod message;
-mod stream_utils;
+mod enums;
+mod network;
+// mod stream_utils;
 
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {

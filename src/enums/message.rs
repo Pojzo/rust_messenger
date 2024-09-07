@@ -1,4 +1,4 @@
-use crate::connection_status::ConnectionStatus;
+use crate::enums::connection_status::ConnectionStatus;
 
 #[derive(Clone)]
 pub(crate) enum CombinedMessage {
@@ -57,4 +57,3 @@ pub fn construct_connection_message(connection_status: ConnectionStatus) -> Comb
         connection_status,
     }))
 }
-

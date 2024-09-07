@@ -5,7 +5,7 @@ use tokio::{
     sync::{mpsc, Mutex as AsyncMutex, Notify},
 };
 
-use crate::{
+use crate::enums::{
     connection_status::ConnectionStatus,
     message::{
         construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
