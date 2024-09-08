@@ -21,6 +21,6 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
-[[bin]]
-name = "test"
-path = "src/test.rs"
+# [[bin]]
+# name = "test"
+# path = "src/test.rs"

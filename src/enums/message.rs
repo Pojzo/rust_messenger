@@ -11,6 +11,18 @@ pub enum Message {
     TextMessage(TextMessage),
 }
 
+pub enum MessageType {
+    TEXT,
+}
+
+impl Message {
+    pub fn to_int(&self) -> u8 {
+        match self {
+            Message::TextMessage(_) => 1,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TextMessage {
     pub content: String,

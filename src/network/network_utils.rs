@@ -10,6 +10,7 @@ use crate::enums::{
     connection_status::ConnectionStatus,
     message::{
         construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
+        MessageType,
     },
 };
 
@@ -188,7 +189,7 @@ fn to_20bit_string(value: u32) -> String {
     format!("{:020b}", twenty_bit_value)
 }
 
-fn to_8bit_string(value: u8) -> String{
+fn to_8bit_string(value: u8) -> String {
     format!("{:08b}", value)
 }
 
@@ -216,7 +217,7 @@ fn pad_string(string: &str, chunk_size: usize) -> String {
       16 bits        16 bits
 
  */
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Protocol {
     pub version: u8,
     pub message_type: u8,
@@ -227,6 +228,27 @@ pub struct Protocol {
 }
 
 impl Protocol {
+    pub fn new(version: u8, message_type: MessageType, payload: String) -> Protocol {
+        let message_type = message_type as u8;
+
+        let checksum = 10;
+
+        let padded_payload = pad_string(&payload, 16);
+
+        let original_len = payload.len();
+        let payload_len = padded_payload.len();
+        let offset = (payload_len - original_len) as u8;
+
+        Protocol {
+            version,
+            message_type,
+            offset,
+            payload_len: payload_len as u32,
+            checksum: 10,
+            payload: padded_payload,
+        }
+    }
+
     pub fn serialize(&self) -> String {
         let mut serialized_payload = String::new();
 
@@ -244,32 +266,40 @@ impl Protocol {
         serialized_payload.push_str(&payload_len);
         serialized_payload.push_str(&checksum);
         serialized_payload.push_str(&payload);
-        
+
         return serialized_payload;
+    }
+
+    pub fn deserialize(serialized_payload: String) -> Protocol {
+        let version_str = &serialized_payload[0..4];
+        let version = u8::from_str_radix(version_str, 2).unwrap();
+
+        let message_type_str = &serialized_payload[4..8];
+        let message_type = u8::from_str_radix(message_type_str, 2).unwrap();
+
+        let offset_str = &serialized_payload[8..12];
+        let offset = u8::from_str_radix(offset_str, 2).unwrap();
+
+        let payload_len_str = &serialized_payload[12..32];
+        let payload_len = u32::from_str_radix(payload_len_str, 2).unwrap();
+
+        let checksum_str = &serialized_payload[32..40];
+        let checksum = u8::from_str_radix(checksum_str, 2).unwrap();
+
+        let payload = serialized_payload[40..].to_string();
+
+        Protocol {
+            version,
+            message_type,
+            offset,
+            checksum,
+            payload_len,
+            payload,
+        }
     }
 }
 
-pub fn construct_payload(version: u8, message_type: Message, payload: String) -> String {
-    let message_type = match message_type {
-        Message::TextMessage(_) => 0 as u8,
-    };
-
-    let checksum = 10;
-
-    let padded_payload = pad_string(&payload, 16);
-
-    let original_len = payload.len();
-    let payload_len = padded_payload.len();
-    let offset = (payload_len - original_len) as u8;
-
-    let protocol = Protocol {
-        version,
-        message_type,
-        offset,
-        payload_len: payload_len as u32,
-        checksum: 10,
-        payload: padded_payload
-    }
-
-    payload
+pub fn construct_payload(version: u8, message_type: MessageType, payload: String) -> String {
+    let protocol = Protocol::new(version, message_type, payload);
+    protocol.serialize()
 }
