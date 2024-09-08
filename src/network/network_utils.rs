@@ -4,6 +4,7 @@ use tokio::{
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     sync::{mpsc, Mutex as AsyncMutex, Notify},
 };
+use u4::U4;
 
 use crate::enums::{
     connection_status::ConnectionStatus,
@@ -182,47 +183,93 @@ fn to_4bit_string(value: u8) -> String {
 }
 
 fn to_20bit_string(value: u32) -> String {
-    let twenty_bit_value = value & 0x0FFFFF;
+    let twenty_bit_value = value & 0x000FFFFF;
 
     format!("{:020b}", twenty_bit_value)
 }
 
-fn pad_payload(content: String, chunk_size: usize) -> String {
-    let msg_len = content.len();
-    let padded_message_len = msg_len + chunk_size - msg_len % chunk_size;
-    let offset = padded_message_len - msg_len;
-
-    let offset_bits = to_4bit_string(offset as u8);
-    let payload_message_len = to_20bit_string(padded_message_len as u32);
-
-    let mut padded_content = content.clone();
-    for _ in 0..offset {
-        padded_content.push('0');
-    }
-
-    format!("{}{}{}", payload_message_len, offset_bits, padded_content)
+fn to_8bit_string(value: u8) -> String{
+    format!("{:08b}", value)
 }
 
-// version: u4
-pub fn construct_payload(version: u8, msg_type: Message, content: String) -> String {
-    let version_bits = to_4bit_string(version);
-    let msg_type_bits = match msg_type {
-        Message::TextMessage(_) => "0000".to_string(),
+fn pad_string(string: &str, chunk_size: usize) -> String {
+    let mut new_string = string.to_string();
+
+    let add_size = chunk_size - (string.len() % chunk_size);
+
+    if add_size != chunk_size {
+        for _ in 0..add_size {
+            new_string.push('0');
+        }
+    }
+
+    return new_string;
+}
+
+/*
+---- version ---- | ---- message type ---- | ---- offset ---- | ---- payload_len ----
+        4 bits   |          4 bits        |           8 bits         |     20 bits
+---- checksum ------------------------------------------------------------------
+      8 bits    24 0-bits
+
+---- chunk1 ---- | ---- chunk2 ----
+      16 bits        16 bits
+
+ */
+#[derive(Clone, PartialEq, Eq)]
+pub struct Protocol {
+    pub version: u8,
+    pub message_type: u8,
+    pub offset: u8,
+    pub payload_len: u32,
+    pub checksum: u8,
+    pub payload: String,
+}
+
+impl Protocol {
+    pub fn serialize(&self) -> String {
+        let mut serialized_payload = String::new();
+
+        let version_bytes = to_4bit_string(self.version);
+        let message_type_bytes = to_4bit_string(self.message_type);
+        let offset_bytes = to_4bit_string(self.offset);
+        let checksum = to_8bit_string(self.checksum);
+
+        let payload_len = to_20bit_string(self.payload_len);
+        let payload = self.payload.clone();
+
+        serialized_payload.push_str(&version_bytes);
+        serialized_payload.push_str(&message_type_bytes);
+        serialized_payload.push_str(&offset_bytes);
+        serialized_payload.push_str(&payload_len);
+        serialized_payload.push_str(&checksum);
+        serialized_payload.push_str(&payload);
+        
+        return serialized_payload;
+    }
+}
+
+pub fn construct_payload(version: u8, message_type: Message, payload: String) -> String {
+    let message_type = match message_type {
+        Message::TextMessage(_) => 0 as u8,
     };
-    let msg_len = content.len();
-    let chunk_size = 16;
-    // offset is the value after padding the message length to 16 bits
-    let padded_message_len = msg_len + 16 - msg_len % chunk_size;
-    let offset = padded_message_len - msg_len;
 
-    let offset_bits = to_4bit_string(offset as u8);
-    let padded_message = pad_payload(content, chunk_size);
-    let payload_message_len_with_offset = to_20bit_string(padded_message_len as u32);
+    let checksum = 10;
 
-    let final_message = format!(
-        "{}{}{}{}{}",
-        version_bits, msg_type_bits, payload_message_len_with_offset, offset_bits, padded_message
-    );
+    let padded_payload = pad_string(&payload, 16);
 
-    final_message
+    let original_len = payload.len();
+    let payload_len = padded_payload.len();
+    let offset = (payload_len - original_len) as u8;
+
+    let protocol = Protocol {
+        version,
+        message_type,
+        offset,
+        payload_len: payload_len as u32,
+        checksum: 10,
+        payload: padded_payload
+    }
+
+    payload
 }
