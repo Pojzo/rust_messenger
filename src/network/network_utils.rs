@@ -83,7 +83,11 @@ pub async fn stream_read(
                     }
                     Ok(n) => {
                         let tx_guard = tx.lock().await;
-                        let content = String::from_utf8_lossy(&buffer[..n]).to_string();
+                        let buffer = &buffer[..n];
+                        let payload = deconstruct_payload(String::from_utf8_lossy(buffer).to_string());
+                        let content = payload.get_content();
+
+                        // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
                         println!("Read {} bytes: {}", n, content);
 
                         if content.trim() == "<DISCONNECT>" {
@@ -163,7 +167,8 @@ pub async fn stream_write(
                     _ => todo!(),
                 };
 
-                match write_stream.write_all(content.as_bytes()).await {
+                let payload = construct_payload(1, MessageType::TEXT, content.clone());
+                match write_stream.write_all(payload.as_bytes()).await {
                     Ok(_) => {
                         println!("Sent message: {}", content);
                     }
@@ -258,6 +263,7 @@ impl Protocol {
         let checksum = to_8bit_string(self.checksum);
 
         let payload_len = to_20bit_string(self.payload_len);
+        let after_checksum_zeros = "0".repeat(24);
         let payload = self.payload.clone();
 
         serialized_payload.push_str(&version_bytes);
@@ -265,6 +271,7 @@ impl Protocol {
         serialized_payload.push_str(&offset_bytes);
         serialized_payload.push_str(&payload_len);
         serialized_payload.push_str(&checksum);
+        serialized_payload.push_str(&after_checksum_zeros);
         serialized_payload.push_str(&payload);
 
         return serialized_payload;
@@ -286,7 +293,9 @@ impl Protocol {
         let checksum_str = &serialized_payload[32..40];
         let checksum = u8::from_str_radix(checksum_str, 2).unwrap();
 
-        let payload = serialized_payload[40..].to_string();
+        let _ = &serialized_payload[40..64];
+
+        let payload = serialized_payload[64..].to_string();
 
         Protocol {
             version,
@@ -297,9 +306,18 @@ impl Protocol {
             payload,
         }
     }
+
+    pub fn get_content(&self) -> String {
+        let len_without_offset = self.payload_len - self.offset as u32;
+        self.payload.clone()[0..len_without_offset as usize].to_string()
+    }
 }
 
 pub fn construct_payload(version: u8, message_type: MessageType, payload: String) -> String {
     let protocol = Protocol::new(version, message_type, payload);
     protocol.serialize()
+}
+
+pub fn deconstruct_payload(payload: String) -> Protocol {
+    Protocol::deserialize(payload)
 }
