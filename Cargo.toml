@@ -6,12 +6,15 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 crossterm = "0.26"
-eframe = "0.22"
-egui = "0.22"
+eframe = "*"
+egui = "*"
 futures = "0.3"
 chrono = "*"
 serde_json = "*"
 u4 = "*"
+egui_extras = { version = "*", features = ["all_loaders"] }
+image = { version = "*", default-features = true }
+
 
 [[bin]]
 name = "server"

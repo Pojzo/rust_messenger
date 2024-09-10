@@ -13,6 +13,7 @@ pub enum Message {
 
 pub enum MessageType {
     TEXT,
+    IMAGE,
 }
 
 impl Message {

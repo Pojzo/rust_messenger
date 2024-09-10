@@ -17,7 +17,7 @@ async fn main() -> Result<(), eframe::Error> {
         Box::new(move |_cc| {
             let mut app = ChatApp::new(AppType::CLIENT);
             app.set_server_addr("192.168.100.78:8888".to_string());
-            Box::new(app)
+            Ok(Box::new(app))
         }),
     )
 }

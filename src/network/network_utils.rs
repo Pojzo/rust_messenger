@@ -4,7 +4,6 @@ use tokio::{
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     sync::{mpsc, Mutex as AsyncMutex, Notify},
 };
-use u4::U4;
 
 use crate::enums::{
     connection_status::ConnectionStatus,
@@ -21,7 +20,7 @@ pub async fn handle_connection(
     disconnect_notify: Arc<Notify>,
 ) {
     let (read_stream, write_stream) = stream.into_split();
-    println!("Connection established");
+
     {
         let connect_message = construct_connection_message(ConnectionStatus::CONNECTED);
         let tx_guard = tx.lock().await;
@@ -33,6 +32,7 @@ pub async fn handle_connection(
         tx.clone(),
         disconnect_notify.clone(),
     ));
+
     let write_handle = tokio::spawn(stream_write(
         write_stream,
         rx.clone(),
@@ -61,12 +61,29 @@ pub async fn handle_disconnect_from_source(
     tx_guard.send(disconnect_message).await.unwrap();
 }
 
+pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
+    // let image = include_bytes!("../../data/server.jpg");
+    // let image_str = String::from_utf8_lossy(image).to_string();
+
+    // let payload = construct_payload(1, MessageType::IMAGE, image_str);
+    // match write_stream.write_all(payload.as_bytes()).await {
+    //     Ok(_) => {
+    //         println!("Sent image");
+    //     }
+    //     Err(e) => {
+    //         eprintln!("Failed to write to connection: {}", e);
+    //     }
+    // }
+}
+
 pub async fn stream_read(
     mut read_stream: OwnedReadHalf,
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
 ) {
-    let mut buffer = [0; 512];
+    // let mut buffer = [0; 512];
+    let mut buffer = Vec::with_capacity(50_000_000);
+    buffer.resize(50_000_000, 0);
     {
         let connect_message = construct_connection_message(ConnectionStatus::CONNECTED);
         let tx_guard = tx.lock().await;
@@ -88,12 +105,17 @@ pub async fn stream_read(
                         let content = payload.get_content();
 
                         // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        println!("Read {} bytes: {}", n, content);
+                        println!("Read {} bytes", n);
 
                         if content.trim() == "<DISCONNECT>" {
                             println!("Received disconnect message");
                             handle_disconnect(&tx, &disconnect_notify).await;
                             break;
+                        }
+
+                        if payload.message_type as u8 == MessageType::IMAGE as u8 {
+                            println!("Received image");
+                            continue;
                         }
 
                         let message = construct_text_message_generic(content.clone(), false);
@@ -136,6 +158,7 @@ pub async fn stream_write(
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
 ) {
+    send_profile_picture(&mut write_stream).await; // Pass mutable reference
     loop {
         let mut message_guard = rx.lock().await;
 
@@ -180,22 +203,6 @@ pub async fn stream_write(
             }
         }
     }
-}
-
-fn to_4bit_string(value: u8) -> String {
-    let four_bit_value = value & 0x0F;
-
-    format!("{:04b}", four_bit_value)
-}
-
-fn to_20bit_string(value: u32) -> String {
-    let twenty_bit_value = value & 0x000FFFFF;
-
-    format!("{:020b}", twenty_bit_value)
-}
-
-fn to_8bit_string(value: u8) -> String {
-    format!("{:08b}", value)
 }
 
 fn pad_string(string: &str, chunk_size: usize) -> String {
@@ -262,8 +269,8 @@ impl Protocol {
         let offset_bytes = to_4bit_string(self.offset);
         let checksum = to_8bit_string(self.checksum);
 
-        let payload_len = to_20bit_string(self.payload_len);
-        let after_checksum_zeros = "0".repeat(24);
+        let payload_len = to_32bit_string(self.payload_len);
+        let after_checksum_zeros = "0".repeat(16); // Adjusted to 16 bits to accommodate 32-bit payload_len
         let payload = self.payload.clone();
 
         serialized_payload.push_str(&version_bytes);
@@ -287,15 +294,15 @@ impl Protocol {
         let offset_str = &serialized_payload[8..12];
         let offset = u8::from_str_radix(offset_str, 2).unwrap();
 
-        let payload_len_str = &serialized_payload[12..32];
+        let payload_len_str = &serialized_payload[12..44]; // Adjusted to 32 bits
         let payload_len = u32::from_str_radix(payload_len_str, 2).unwrap();
 
-        let checksum_str = &serialized_payload[32..40];
+        let checksum_str = &serialized_payload[44..52]; // Adjusted to start after 32-bit payload_len
         let checksum = u8::from_str_radix(checksum_str, 2).unwrap();
 
-        let _ = &serialized_payload[40..64];
+        let _ = &serialized_payload[52..68]; // Adjusted to start after checksum
 
-        let payload = serialized_payload[64..].to_string();
+        let payload = serialized_payload[68..].to_string(); // Adjusted to start after the new bit offsets
 
         Protocol {
             version,
@@ -308,9 +315,23 @@ impl Protocol {
     }
 
     pub fn get_content(&self) -> String {
+        // print all fields from payload
         let len_without_offset = self.payload_len - self.offset as u32;
         self.payload.clone()[0..len_without_offset as usize].to_string()
     }
+}
+
+// Helper functions to convert integers to binary strings
+fn to_4bit_string(value: u8) -> String {
+    format!("{:04b}", value)
+}
+
+fn to_8bit_string(value: u8) -> String {
+    format!("{:08b}", value)
+}
+
+fn to_32bit_string(value: u32) -> String {
+    format!("{:032b}", value)
 }
 
 pub fn construct_payload(version: u8, message_type: MessageType, payload: String) -> String {

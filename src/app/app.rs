@@ -1,6 +1,10 @@
 use eframe::egui;
+use std::fs::File;
+use std::io::Read;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+
+use egui_extras::RetainedImage;
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -35,6 +39,10 @@ pub struct ChatApp {
     server_addr: String,
     connection_status: ConnectionStatus,
     disconect_notify: Arc<Notify>,
+
+    my_profile_pic_path: String,
+    my_profile_pic_buffer: Vec<u8>,
+    target_profile_pic_path: String,
 }
 
 impl ChatApp {
@@ -53,6 +61,10 @@ impl ChatApp {
             server_addr: "".to_string(),
             connection_status: ConnectionStatus::DISCONNECTED,
             disconect_notify: Arc::new(Notify::new()),
+
+            my_profile_pic_path: "".to_string(),
+            my_profile_pic_buffer: vec![],
+            target_profile_pic_path: "".to_string(),
         }
     }
 
@@ -175,7 +187,6 @@ impl ChatApp {
                 ).await
             }
             _ = disconnect_notify.notified() => {
-                println!("I too have been received that");
                 let tx_guard = tx_stream.lock().await;
                 let disconnect_message = construct_connection_message(ConnectionStatus::DISCONNECTED);
                 tx_guard.send(disconnect_message).await.unwrap();
@@ -204,6 +215,14 @@ impl ChatApp {
         }
     }
 
+    pub fn set_my_profile_pic(&mut self, path: String) {
+        self.my_profile_pic_path = path;
+    }
+
+    pub fn set_target_profile_pic(&mut self, path: String) {
+        self.target_profile_pic_path = path;
+    }
+
     // Async function to poll for messages and update the synchronous cache
     async fn poll_messages(rx: AsyncReceiver, cache: ChatHistory, log: Log) {
         while let Some(generic_message) = rx.lock().await.recv().await {
@@ -224,6 +243,46 @@ impl ChatApp {
 }
 
 impl ChatApp {
+    fn show_profile_panel(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("profile").show(ctx, |ui| {
+            let mut buffer = vec![];
+            let filepath = self.my_profile_pic_path.clone();
+            println!("Filepath: {}", self.my_profile_pic_path);
+
+            if self.my_profile_pic_buffer.is_empty() {
+                match File::open(filepath.clone()) {
+                    Ok(mut file) => match file.read_to_end(&mut buffer) {
+                        Ok(_) => {
+                            let image = RetainedImage::from_image_bytes(filepath, &buffer);
+                            match image {
+                                Ok(image) => {
+                                    self.my_profile_pic_buffer = buffer;
+                                    image.show(ui);
+                                }
+                                Err(e) => {
+                                    ui.label("Failed to load image");
+                                    eprintln!("Failed to load image: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            ui.label("Failed to read file");
+                            eprintln!("Failed to read file: {}", e);
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        ui.label("Failed to open file");
+                        eprintln!("Failed to open file: {}", e);
+                        return;
+                    }
+                }
+            } else {
+                let image = RetainedImage::from_image_bytes(filepath, &self.my_profile_pic_buffer);
+                image.unwrap().show(ui);
+            }
+        });
+    }
     fn show_chat_history_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Chat History:");
@@ -373,11 +432,17 @@ impl ChatApp {
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|_ui| {
+            ui.horizontal(|ui| {
+                // Show chat history panel on the left
                 self.show_chat_history_panel(ctx);
                 self.show_status_panel(ctx);
+                if self.connection_status == ConnectionStatus::CONNECTED || true {
+                    self.show_profile_panel(ctx);
+                }
             });
         });
+
+        // Show chat input panel at the bottom
         self.show_chat_input_panel(ctx);
     }
 }
