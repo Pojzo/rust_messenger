@@ -13,7 +13,8 @@ chrono = "*"
 serde_json = "*"
 u4 = "*"
 egui_extras = { version = "*", features = ["all_loaders"] }
-image = { version = "*", default-features = true }
+image = { version = "*", default-features = true, features = ["jpeg", "png"] }
+fast_image_resize = "4.2.1"
 
 
 [[bin]]

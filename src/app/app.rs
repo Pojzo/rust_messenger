@@ -1,4 +1,8 @@
 use eframe::egui;
+use egui::Image;
+use fast_image_resize::Resizer;
+use image::io::Reader;
+use image::{imageops, ImageReader};
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
@@ -245,41 +249,61 @@ impl ChatApp {
 impl ChatApp {
     fn show_profile_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("profile").show(ctx, |ui| {
-            let mut buffer = vec![];
             let filepath = self.my_profile_pic_path.clone();
-            println!("Filepath: {}", self.my_profile_pic_path);
 
             if self.my_profile_pic_buffer.is_empty() {
-                match File::open(filepath.clone()) {
-                    Ok(mut file) => match file.read_to_end(&mut buffer) {
-                        Ok(_) => {
-                            let image = RetainedImage::from_image_bytes(filepath, &buffer);
-                            match image {
-                                Ok(image) => {
-                                    self.my_profile_pic_buffer = buffer;
-                                    image.show(ui);
+                match ImageReader::open(filepath.clone()) {
+                    Ok(reader) => match reader.decode() {
+                        Ok(img) => {
+                            let resized =
+                                imageops::resize(&img, 100, 100, imageops::FilterType::Nearest);
+                            use std::io::Cursor;
+
+                            let mut buffer = Cursor::new(Vec::new());
+                            match resized.write_to(&mut buffer, image::ImageFormat::Png) {
+                                Ok(_) => {
+                                    let image = RetainedImage::from_image_bytes(
+                                        filepath,
+                                        &buffer.get_ref(),
+                                    );
+                                    match image {
+                                        Ok(image) => {
+                                            self.my_profile_pic_buffer = buffer.into_inner();
+                                            image.show(ui);
+                                        }
+                                        Err(e) => {
+                                            ui.label("Failed to load image");
+                                            eprintln!("Failed to load image: {}", e);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
-                                    ui.label("Failed to load image");
-                                    eprintln!("Failed to load image: {}", e);
+                                    ui.label("Failed to write image to buffer");
+                                    eprintln!("Failed to write image to buffer: {}", e);
                                 }
                             }
                         }
                         Err(e) => {
-                            ui.label("Failed to read file");
-                            eprintln!("Failed to read file: {}", e);
-                            return;
+                            ui.label("Failed to decode image");
+                            eprintln!("Failed to decode image: {}", e);
                         }
                     },
                     Err(e) => {
                         ui.label("Failed to open file");
                         eprintln!("Failed to open file: {}", e);
-                        return;
                     }
                 }
             } else {
                 let image = RetainedImage::from_image_bytes(filepath, &self.my_profile_pic_buffer);
-                image.unwrap().show(ui);
+                match image {
+                    Ok(image) => {
+                        image.show(ui);
+                    }
+                    Err(e) => {
+                        ui.label("Failed to load image");
+                        eprintln!("Failed to load image: {}", e);
+                    }
+                }
             }
         });
     }
