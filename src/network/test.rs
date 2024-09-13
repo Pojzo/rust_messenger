@@ -2,7 +2,11 @@
 mod tests {
     use image::io::Reader as ImageReader;
 
-    use crate::{enums::message::MessageType, network::network_utils::Protocol};
+    use crate::{
+        app::app::{color_image_to_bytes, Profile},
+        enums::message::MessageType,
+        network::network_utils::Protocol,
+    };
 
     #[test]
     fn test_serialize_deserialize() {
@@ -60,15 +64,16 @@ mod tests {
     }
     #[test]
     fn test_serialize_deserialize_image() {
-        let image = include_bytes!("../../data/server.png");
-        let image_string = String::from_utf8_lossy(image).to_string();
+        let profile = Profile::new("data/pojzo.jpg");
+        let image = profile.get_image().unwrap();
+        let bytes = color_image_to_bytes(&image);
 
-        let protocol = Protocol::new(2, MessageType::IMAGE, image_string.clone());
+        let string_bytes = String::from_utf8_lossy(&bytes);
+
+        let protocol = Protocol::new(2, MessageType::IMAGE, string_bytes.to_string());
 
         let serialized = protocol.serialize();
         let deserialized = Protocol::deserialize(serialized);
-
         assert_eq!(protocol, deserialized);
-        assert_eq!(image_string, deserialized.get_content());
     }
 }

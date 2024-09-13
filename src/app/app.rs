@@ -1,8 +1,9 @@
+use crossterm::event::DisableMouseCapture;
 use eframe::egui;
-use egui::Image;
+use egui::{ColorImage, Image, TextureHandle};
 use fast_image_resize::Resizer;
 use image::io::Reader;
-use image::{imageops, ImageReader};
+use image::{imageops, GenericImageView, ImageReader};
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
@@ -29,6 +30,62 @@ type AsyncSender = Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>;
 type AsyncReceiver = Arc<AsyncMutex<mpsc::Receiver<CombinedMessage>>>;
 
 #[derive(Clone)]
+pub struct Profile {
+    image: Option<ColorImage>,
+    texture: Option<TextureHandle>,
+}
+
+pub fn color_image_to_bytes(color_image: &egui::ColorImage) -> Vec<u8> {
+    // Extract dimensions and pixel data
+    let (width, height) = (color_image.size[0], color_image.size[1]);
+    let pixels = &color_image.pixels;
+
+    // Create a vector to hold the raw byte data
+    let mut bytes = Vec::with_capacity((width * height * 4) as usize); // 4 bytes per pixel (RGBA)
+
+    // Convert the `ColorImage` pixels to a byte vector
+    for pixel in pixels {
+        bytes.push(pixel[0]); // Red
+        bytes.push(pixel[1]); // Green
+        bytes.push(pixel[2]); // Blue
+        bytes.push(pixel[3]); // Alpha
+    }
+
+    bytes
+}
+
+impl Profile {
+    pub fn new(filepath: &str) -> Self {
+        let mut result = Self::default();
+        if let Ok(image) = image::open(filepath) {
+            let new_width = 300;
+            let new_height = 300;
+            let image = image.resize(new_width, new_height, image::imageops::FilterType::Nearest);
+
+            let dim = image.dimensions();
+            let size = [dim.0 as usize, dim.1 as usize];
+            let color_image = ColorImage::from_rgba_unmultiplied(size, &image.to_rgba8().to_vec());
+            result.image = Some(color_image);
+
+            result
+        } else {
+            result
+        }
+    }
+
+    pub fn get_image(&self) -> Option<ColorImage> {
+        self.image.clone()
+    }
+
+    pub fn default() -> Self {
+        Self {
+            image: None,
+            texture: None,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ChatApp {
     app_type: AppType,
     chat_input: String,
@@ -44,9 +101,8 @@ pub struct ChatApp {
     connection_status: ConnectionStatus,
     disconect_notify: Arc<Notify>,
 
-    my_profile_pic_path: String,
-    my_profile_pic_buffer: Vec<u8>,
-    target_profile_pic_path: String,
+    my_profile: Option<Profile>,
+    target_profile: Option<Profile>,
 }
 
 impl ChatApp {
@@ -66,11 +122,12 @@ impl ChatApp {
             connection_status: ConnectionStatus::DISCONNECTED,
             disconect_notify: Arc::new(Notify::new()),
 
-            my_profile_pic_path: "".to_string(),
-            my_profile_pic_buffer: vec![],
-            target_profile_pic_path: "".to_string(),
+            my_profile: None,
+            target_profile: None,
         }
     }
+
+    fn load_my_profile(&mut self) {}
 
     fn init_connection(&self) {
         let app_type = self.app_type.clone();
@@ -219,14 +276,6 @@ impl ChatApp {
         }
     }
 
-    pub fn set_my_profile_pic(&mut self, path: String) {
-        self.my_profile_pic_path = path;
-    }
-
-    pub fn set_target_profile_pic(&mut self, path: String) {
-        self.target_profile_pic_path = path;
-    }
-
     // Async function to poll for messages and update the synchronous cache
     async fn poll_messages(rx: AsyncReceiver, cache: ChatHistory, log: Log) {
         while let Some(generic_message) = rx.lock().await.recv().await {
@@ -247,69 +296,13 @@ impl ChatApp {
 }
 
 impl ChatApp {
-    fn show_profile_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("profile").show(ctx, |ui| {
-            let filepath = self.my_profile_pic_path.clone();
-
-            if self.my_profile_pic_buffer.is_empty() {
-                match ImageReader::open(filepath.clone()) {
-                    Ok(reader) => match reader.decode() {
-                        Ok(img) => {
-                            let resized =
-                                imageops::resize(&img, 100, 100, imageops::FilterType::Nearest);
-                            use std::io::Cursor;
-
-                            let mut buffer = Cursor::new(Vec::new());
-                            match resized.write_to(&mut buffer, image::ImageFormat::Png) {
-                                Ok(_) => {
-                                    let image = RetainedImage::from_image_bytes(
-                                        filepath,
-                                        &buffer.get_ref(),
-                                    );
-                                    match image {
-                                        Ok(image) => {
-                                            self.my_profile_pic_buffer = buffer.into_inner();
-                                            image.show(ui);
-                                        }
-                                        Err(e) => {
-                                            ui.label("Failed to load image");
-                                            eprintln!("Failed to load image: {}", e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    ui.label("Failed to write image to buffer");
-                                    eprintln!("Failed to write image to buffer: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            ui.label("Failed to decode image");
-                            eprintln!("Failed to decode image: {}", e);
-                        }
-                    },
-                    Err(e) => {
-                        ui.label("Failed to open file");
-                        eprintln!("Failed to open file: {}", e);
-                    }
-                }
-            } else {
-                let image = RetainedImage::from_image_bytes(filepath, &self.my_profile_pic_buffer);
-                match image {
-                    Ok(image) => {
-                        image.show(ui);
-                    }
-                    Err(e) => {
-                        ui.label("Failed to load image");
-                        eprintln!("Failed to load image: {}", e);
-                    }
-                }
-            }
-        });
-    }
     fn show_chat_history_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Chat History:");
+            egui::Frame::none()
+                .outer_margin(egui::Margin::same(10.0))
+                .show(ui, |ui| {
+                    ui.heading("Chat History:");
+                });
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let history_clone = self.chat_history.clone();
                 let history_guard = history_clone.lock().unwrap();
@@ -451,6 +444,26 @@ impl ChatApp {
             });
         });
     }
+
+    fn show_profile_image(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        if self.connection_status == ConnectionStatus::CONNECTED || true {
+            if self.my_profile.is_none() {
+                self.my_profile = Some(Profile::new("data/pojzo.jpg"));
+            }
+            if let Some(profile) = &self.my_profile {
+                if let Some(image) = &profile.image {
+                    let texture = Some(ctx.load_texture(
+                        "my_image",
+                        image.clone(),
+                        egui::TextureOptions::default(),
+                    ));
+                    if let Some(texture) = &texture {
+                        ui.image(texture);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for ChatApp {
@@ -461,7 +474,9 @@ impl eframe::App for ChatApp {
                 self.show_chat_history_panel(ctx);
                 self.show_status_panel(ctx);
                 if self.connection_status == ConnectionStatus::CONNECTED || true {
-                    self.show_profile_panel(ctx);
+                    egui::SidePanel::right("profile_panel").show(ctx, |ui| {
+                        self.show_profile_image(ctx, ui);
+                    });
                 }
             });
         });
