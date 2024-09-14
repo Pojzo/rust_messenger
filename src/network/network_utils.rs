@@ -102,7 +102,7 @@ pub async fn stream_read(
                         let tx_guard = tx.lock().await;
                         let buffer = &buffer[..n];
                         let payload = deconstruct_payload(String::from_utf8_lossy(buffer).to_string());
-                        let content = payload.get_content();
+                        let content = payload.text_protocol.unwrap().content;
 
                         // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
                         println!("Read {} bytes", n);
@@ -229,95 +229,195 @@ fn pad_string(string: &str, chunk_size: usize) -> String {
       16 bits        16 bits
 
  */
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TextProtocol {
+    pub content: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ImageProtocol {
+    pub content: String,
+    pub width: u16,
+    pub height: u16,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Protocol {
     pub version: u8,
     pub message_type: u8,
-    pub offset: u8,
-    pub payload_len: u32,
-    pub checksum: u8,
     pub payload: String,
+
+    pub text_protocol: Option<TextProtocol>,
+    pub image_protocol: Option<ImageProtocol>,
 }
 
 impl Protocol {
-    pub fn new(version: u8, message_type: MessageType, payload: String) -> Protocol {
-        let message_type = message_type as u8;
+    pub fn new_text(version: u8, payload: String) -> Protocol {
+        let message_type = MessageType::TEXT as u8;
 
-        let checksum = 10;
+        let text_protocol = Some(TextProtocol {
+            content: payload.clone(),
+        });
+        let image_protocol = None;
 
-        let padded_payload = pad_string(&payload, 16);
-
-        let original_len = payload.len();
-        let payload_len = padded_payload.len();
-        let offset = (payload_len - original_len) as u8;
+        let payload_len = payload.len() as u32;
 
         Protocol {
             version,
             message_type,
-            offset,
-            payload_len: payload_len as u32,
-            checksum: 10,
-            payload: padded_payload,
+            payload,
+            text_protocol,
+            image_protocol,
+        }
+    }
+
+    pub fn new_image(version: u8, payload: String, width: u16, height: u16) -> Protocol {
+        let message_type = MessageType::IMAGE as u8;
+
+        let text_protocol = None;
+        let image_protocol = Some(ImageProtocol {
+            content: payload.clone(),
+            width,
+            height,
+        });
+
+        Protocol {
+            version,
+            message_type,
+            payload,
+            text_protocol,
+            image_protocol,
         }
     }
 
     pub fn serialize(&self) -> String {
+        match self.message_type {
+            0 => self.serialize_text(),
+            1 => self.serialize_image(),
+            _ => panic!("Unknown message type"),
+        }
+    }
+
+    pub fn serialize_text(&self) -> String {
         let mut serialized_payload = String::new();
 
         let version_bytes = to_4bit_string(self.version);
         let message_type_bytes = to_4bit_string(self.message_type);
-        let offset_bytes = to_4bit_string(self.offset);
-        let checksum = to_8bit_string(self.checksum);
 
-        let payload_len = to_32bit_string(self.payload_len);
-        let after_checksum_zeros = "0".repeat(16); // Adjusted to 16 bits to accommodate 32-bit payload_len
-        let payload = self.payload.clone();
+        let padded_payload = pad_string(&self.payload, 16);
+
+        let offset = padded_payload.len() - self.payload.len();
+        let offset_bytes = to_4bit_string(offset as u8);
+
+        let payload_len = to_32bit_string(padded_payload.len() as u32);
 
         serialized_payload.push_str(&version_bytes);
         serialized_payload.push_str(&message_type_bytes);
         serialized_payload.push_str(&offset_bytes);
         serialized_payload.push_str(&payload_len);
-        serialized_payload.push_str(&checksum);
-        serialized_payload.push_str(&after_checksum_zeros);
-        serialized_payload.push_str(&payload);
+        serialized_payload.push_str(&padded_payload);
 
-        return serialized_payload;
+        serialized_payload
+    }
+
+    pub fn serialize_image(&self) -> String {
+        let mut serialized_payload = String::new();
+
+        let version_bytes = to_4bit_string(self.version);
+        let message_type_bytes = to_4bit_string(self.message_type);
+
+        let offset = self.payload.len() - self.image_protocol.as_ref().unwrap().content.len();
+        let offset_bytes = to_4bit_string(offset as u8);
+
+        let padded_payload = pad_string(&self.payload, 16);
+        let payload_len_bytes = to_32bit_string(self.payload.len() as u32);
+
+        let width = self.image_protocol.as_ref().unwrap().width;
+        let height = self.image_protocol.as_ref().unwrap().height;
+
+        let width_bytes = to_16bit_string(width);
+        let height_bytes = to_16bit_string(height);
+
+        serialized_payload.push_str(&version_bytes);
+        serialized_payload.push_str(&message_type_bytes);
+        serialized_payload.push_str(&offset_bytes);
+        serialized_payload.push_str(&payload_len_bytes);
+        serialized_payload.push_str(&width_bytes);
+        serialized_payload.push_str(&height_bytes);
+        serialized_payload.push_str(&padded_payload);
+
+        serialized_payload
     }
 
     pub fn deserialize(serialized_payload: String) -> Protocol {
-        let version_str = &serialized_payload[0..4];
-        let version = u8::from_str_radix(version_str, 2).unwrap();
-
         let message_type_str = &serialized_payload[4..8];
+
         let message_type = u8::from_str_radix(message_type_str, 2).unwrap();
+        println!("Message type: {}", message_type);
 
-        let offset_str = &serialized_payload[8..12];
-        let offset = u8::from_str_radix(offset_str, 2).unwrap();
+        match message_type {
+            0 => Protocol::deserialize_text(serialized_payload),
+            1 => Protocol::deserialize_image(serialized_payload),
+            _ => panic!("Unknown message type: {}", message_type),
+        }
+    }
 
-        let payload_len_str = &serialized_payload[12..44]; // Adjusted to 32 bits
-        let payload_len = u32::from_str_radix(payload_len_str, 2).unwrap();
+    pub fn deserialize_text(serialized_payload: String) -> Protocol {
+        let version = u8::from_str_radix(&serialized_payload[0..4], 2).unwrap();
+        let message_type = u8::from_str_radix(&serialized_payload[4..8], 2).unwrap();
+        let offset = u8::from_str_radix(&serialized_payload[8..12], 2).unwrap();
 
-        let checksum_str = &serialized_payload[44..52]; // Adjusted to start after 32-bit payload_len
-        let checksum = u8::from_str_radix(checksum_str, 2).unwrap();
+        let payload_len = u32::from_str_radix(&serialized_payload[12..44], 2).unwrap();
+        let payload_start = 44;
+        let payload_end = payload_start + payload_len as usize;
 
-        let _ = &serialized_payload[52..68]; // Adjusted to start after checksum
+        let full_payload = &serialized_payload[payload_start..payload_end];
+        let payload = &full_payload[..(full_payload.len() - offset as usize)];
 
-        let payload = serialized_payload[68..].to_string(); // Adjusted to start after the new bit offsets
+        let text_protocol = Some(TextProtocol {
+            content: payload.to_string(),
+        });
+        let image_protocol = None;
 
         Protocol {
             version,
             message_type,
-            offset,
-            checksum,
-            payload_len,
-            payload,
+            payload: payload.to_string(),
+            text_protocol,
+            image_protocol,
         }
     }
 
-    pub fn get_content(&self) -> String {
-        // print all fields from payload
-        let len_without_offset = self.payload_len - self.offset as u32;
-        self.payload.clone()[0..len_without_offset as usize].to_string()
+    pub fn deserialize_image(serialized_payload: String) -> Protocol {
+        let version = u8::from_str_radix(&serialized_payload[0..4], 2).unwrap();
+        let message_type = u8::from_str_radix(&serialized_payload[4..8], 2).unwrap();
+        let offset = u8::from_str_radix(&serialized_payload[8..12], 2).unwrap();
+
+        let payload_len = u32::from_str_radix(&serialized_payload[12..44], 2).unwrap();
+        let width = u16::from_str_radix(&serialized_payload[44..60], 2).unwrap();
+        let height = u16::from_str_radix(&serialized_payload[60..76], 2).unwrap();
+
+        let payload_start = 76;
+        let payload_end = payload_start + payload_len as usize;
+
+        let full_payload = &serialized_payload[payload_start..payload_end];
+        let payload = &full_payload[..(full_payload.len() - offset as usize)];
+
+        let text_protocol = None;
+        let image_protocol = Some(ImageProtocol {
+            content: payload.to_string(),
+            width,
+            height,
+        });
+
+        Protocol {
+            version,
+            message_type,
+            payload: payload.to_string(),
+            text_protocol,
+            image_protocol,
+        }
     }
 }
 
@@ -334,9 +434,21 @@ fn to_32bit_string(value: u32) -> String {
     format!("{:032b}", value)
 }
 
+fn to_16bit_string(value: u16) -> String {
+    format!("{:016b}", value)
+}
+
 pub fn construct_payload(version: u8, message_type: MessageType, payload: String) -> String {
-    let protocol = Protocol::new(version, message_type, payload);
-    protocol.serialize()
+    match message_type {
+        MessageType::TEXT => {
+            let protocol = Protocol::new_text(version, payload);
+            protocol.serialize()
+        }
+        MessageType::IMAGE => {
+            let protocol = Protocol::new_image(version, payload, 300, 300);
+            protocol.serialize()
+        }
+    }
 }
 
 pub fn deconstruct_payload(payload: String) -> Protocol {
