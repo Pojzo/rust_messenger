@@ -1,6 +1,5 @@
 use egui::{ColorImage, TextureHandle};
 use image::{DynamicImage, GenericImageView};
-use std::io::{Bytes, Cursor};
 
 fn load_image(filepath: &str) -> Result<DynamicImage, std::io::Error> {
     if let Ok(image) = image::open(filepath) {
@@ -32,7 +31,7 @@ async fn main() -> Result<(), eframe::Error> {
         "Client application",
         options,
         Box::new(move |_cc| {
-            let mut app = App::new(image);
+            let app = App::new(image);
             Ok(Box::new(app))
         }),
     );

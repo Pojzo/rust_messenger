@@ -1,15 +1,8 @@
-use crossterm::event::DisableMouseCapture;
 use eframe::egui;
-use egui::{ColorImage, Image, TextureHandle};
-use fast_image_resize::Resizer;
-use image::io::Reader;
-use image::{imageops, GenericImageView, ImageReader};
-use std::fs::File;
-use std::io::Read;
+use egui::{ColorImage, TextureHandle};
+use image::GenericImageView;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-
-use egui_extras::RetainedImage;
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -233,7 +226,6 @@ impl ChatApp {
         {
             let listening_message =
                 construct_connection_message(connection_status::ConnectionStatus::LISTENING);
-            println!("Waiting for tx_stream lock");
             let tx_guard = tx_stream.lock().await;
             tx_guard.send(listening_message).await.unwrap();
         }
@@ -259,7 +251,6 @@ impl ChatApp {
 
     async fn send_message(tx_input: AsyncSender, message: String, chat_history: ChatHistory) {
         let message_clone = message.clone();
-        println!("Trying to write message: {}", message);
         match tx_input
             .lock()
             .await
@@ -267,7 +258,6 @@ impl ChatApp {
             .await
         {
             Ok(_) => {
-                println!("Message sent");
                 let mut chat_history = chat_history.lock().unwrap();
                 let new_message = construct_text_message(message_clone, true);
                 chat_history.push(new_message);
@@ -475,7 +465,7 @@ impl eframe::App for ChatApp {
                 self.show_status_panel(ctx);
                 if self.connection_status == ConnectionStatus::CONNECTED || true {
                     egui::SidePanel::right("profile_panel").show(ctx, |ui| {
-                        self.show_profile_image(ctx, ui);
+                        // self.show_profile_image(ctx, ui);
                     });
                 }
             });

@@ -1,10 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use image::io::Reader as ImageReader;
 
     use crate::{
         app::app::{color_image_to_bytes, Profile},
-        enums::message::MessageType,
         network::network_utils::Protocol,
     };
 
@@ -90,13 +88,15 @@ mod tests {
         println!("Serialized len: {}", serialized.len());
 
         let deserialized = Protocol::deserialize(serialized);
-        // assert_eq!(protocol, deserialized);
+        assert_eq!(protocol, deserialized);
 
-        assert_ne!(deserialized.image_protocol, None)
-        // let deserialized_width = deserialized_image.width;
-        // let deserialized_height = deserialized_image.height;
+        assert_ne!(deserialized.image_protocol, None);
+        let deserialized_image = deserialized.image_protocol.unwrap();
 
-        // assert_eq!(width, deserialized_width);
-        // assert_eq!(height, deserialized_height);
+        let deserialized_width = deserialized_image.width;
+        let deserialized_height = deserialized_image.height;
+
+        assert_eq!(width, deserialized_width);
+        assert_eq!(height, deserialized_height);
     }
 }

@@ -5,11 +5,14 @@ use tokio::{
     sync::{mpsc, Mutex as AsyncMutex, Notify},
 };
 
-use crate::enums::{
-    connection_status::ConnectionStatus,
-    message::{
-        construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
-        MessageType,
+use crate::{
+    app::app::{color_image_to_bytes, Profile},
+    enums::{
+        connection_status::ConnectionStatus,
+        message::{
+            construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
+            MessageType,
+        },
     },
 };
 
@@ -62,18 +65,34 @@ pub async fn handle_disconnect_from_source(
 }
 
 pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
-    // let image = include_bytes!("../../data/server.jpg");
-    // let image_str = String::from_utf8_lossy(image).to_string();
+    let profile = Profile::new("data/kopernik.jpg");
+    let image = profile.get_image().unwrap();
+    let bytes = color_image_to_bytes(&image);
 
-    // let payload = construct_payload(1, MessageType::IMAGE, image_str);
-    // match write_stream.write_all(payload.as_bytes()).await {
-    //     Ok(_) => {
-    //         println!("Sent image");
-    //     }
-    //     Err(e) => {
-    //         eprintln!("Failed to write to connection: {}", e);
-    //     }
-    // }
+    let width = image.width() as u16;
+    let height = image.height() as u16;
+
+    let image_bytes = String::from_utf8_lossy(&bytes);
+
+    let protocol = Protocol::new_image(1, image_bytes.to_string(), width, height);
+    let serialized = protocol.serialize();
+    println!(
+        "Sending profile picture, len of serialized: {}",
+        serialized.len(),
+    );
+
+    match write_stream.write_all(serialized.as_bytes()).await {
+        Ok(_) => {
+            println!("Sent profile picture");
+        }
+        Err(e) => {
+            eprintln!("Failed to write to connection: {}", e);
+        }
+    }
+}
+
+pub async fn receive_profile_picture(payload: Protocol) {
+    println!("Received image");
 }
 
 pub async fn stream_read(
@@ -99,13 +118,17 @@ pub async fn stream_read(
                         break;
                     }
                     Ok(n) => {
+                        println!("Read {} bytes", n);
                         let tx_guard = tx.lock().await;
                         let buffer = &buffer[..n];
                         let payload = deconstruct_payload(String::from_utf8_lossy(buffer).to_string());
+                        if payload.image_protocol != None {
+                            receive_profile_picture(payload).await;
+                            continue;
+                        }
                         let content = payload.text_protocol.unwrap().content;
 
                         // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        println!("Read {} bytes", n);
 
                         if content.trim() == "<DISCONNECT>" {
                             println!("Received disconnect message");
@@ -312,11 +335,14 @@ impl Protocol {
 
         let payload_len = to_32bit_string(padded_payload.len() as u32);
 
+        let eof = "00000000";
+
         serialized_payload.push_str(&version_bytes);
         serialized_payload.push_str(&message_type_bytes);
         serialized_payload.push_str(&offset_bytes);
         serialized_payload.push_str(&payload_len);
         serialized_payload.push_str(&padded_payload);
+        serialized_payload.push_str(&eof);
 
         serialized_payload
     }
@@ -339,6 +365,8 @@ impl Protocol {
         let width_bytes = to_16bit_string(width);
         let height_bytes = to_16bit_string(height);
 
+        let eof = "00000000";
+
         serialized_payload.push_str(&version_bytes);
         serialized_payload.push_str(&message_type_bytes);
         serialized_payload.push_str(&offset_bytes);
@@ -346,6 +374,7 @@ impl Protocol {
         serialized_payload.push_str(&width_bytes);
         serialized_payload.push_str(&height_bytes);
         serialized_payload.push_str(&padded_payload);
+        serialized_payload.push_str(&eof);
 
         serialized_payload
     }
@@ -354,7 +383,6 @@ impl Protocol {
         let message_type_str = &serialized_payload[4..8];
 
         let message_type = u8::from_str_radix(message_type_str, 2).unwrap();
-        println!("Message type: {}", message_type);
 
         match message_type {
             0 => Protocol::deserialize_text(serialized_payload),
