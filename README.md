@@ -17,6 +17,5 @@
 | **version**    | 1 byte     | Protocol version                           |
 | **msg_type**   | 1 byte     | Type of message (e.g., start, data, end)    |
 | **offset_bytes** | 1 byte   | Offset in bytes for payload data (for chunking) |
-| **checksum**   | 2 bytes    | Checksum for error detection (optional)     |
 | **payload_len** | 4 bytes   | Length of the payload in bytes              |
 | **payload**    | *n* bytes  | The actual text data (padded to 16-byte multiples) |
