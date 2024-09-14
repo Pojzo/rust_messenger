@@ -22,10 +22,12 @@ type Log = Arc<StdMutex<Vec<LogMessage>>>;
 type AsyncSender = Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>;
 type AsyncReceiver = Arc<AsyncMutex<mpsc::Receiver<CombinedMessage>>>;
 
+type ProfileType = Arc<StdMutex<Profile>>;
+
 #[derive(Clone)]
 pub struct Profile {
-    image: Option<ColorImage>,
-    texture: Option<TextureHandle>,
+    pub image: Option<ColorImage>,
+    pub texture: Option<TextureHandle>,
 }
 
 pub fn color_image_to_bytes(color_image: &egui::ColorImage) -> Vec<u8> {
@@ -66,6 +68,15 @@ impl Profile {
         }
     }
 
+    pub fn from_bytes(bytes: Vec<u8>, width: u16, height: u16) -> Self {
+        let size = [width as usize, height as usize];
+        let color_image = ColorImage::from_rgba_unmultiplied(size, &bytes);
+        Self {
+            image: Some(color_image),
+            texture: None,
+        }
+    }
+
     pub fn get_image(&self) -> Option<ColorImage> {
         self.image.clone()
     }
@@ -94,8 +105,8 @@ pub struct ChatApp {
     connection_status: ConnectionStatus,
     disconect_notify: Arc<Notify>,
 
-    my_profile: Option<Profile>,
-    target_profile: Option<Profile>,
+    my_profile: ProfileType,
+    target_profile: ProfileType,
 }
 
 impl ChatApp {
@@ -115,8 +126,8 @@ impl ChatApp {
             connection_status: ConnectionStatus::DISCONNECTED,
             disconect_notify: Arc::new(Notify::new()),
 
-            my_profile: None,
-            target_profile: None,
+            my_profile: Arc::new(StdMutex::new(Profile::default())),
+            target_profile: Arc::new(StdMutex::new(Profile::default())),
         }
     }
 
@@ -142,8 +153,10 @@ impl ChatApp {
         let cache = self.chat_history.clone();
         let log = self.log.clone();
         let rx_input_clone = self.rx_input.clone();
-        tokio::spawn(async {
-            Self::poll_messages(rx_input_clone, cache, log).await;
+        let mut target_profile = self.target_profile.clone();
+
+        tokio::spawn(async move {
+            Self::poll_messages(rx_input_clone, cache, log, &mut target_profile).await;
         });
     }
 
@@ -267,13 +280,28 @@ impl ChatApp {
     }
 
     // Async function to poll for messages and update the synchronous cache
-    async fn poll_messages(rx: AsyncReceiver, cache: ChatHistory, log: Log) {
+    async fn poll_messages(
+        rx: AsyncReceiver,
+        cache: ChatHistory,
+        log: Log,
+        target_profile: &mut ProfileType,
+    ) {
         while let Some(generic_message) = rx.lock().await.recv().await {
             match generic_message {
                 CombinedMessage::Message(message) => match message {
                     Message::TextMessage(text_message) => {
                         let mut cache_guard = cache.lock().unwrap();
                         cache_guard.push(Message::TextMessage(text_message.clone()));
+                    }
+                    Message::ImageMessage(image_message) => {
+                        let content = image_message.content.clone();
+                        let width = image_message.width;
+                        let height = image_message.height;
+                        let profile = Profile::from_bytes(content, width, height);
+
+                        let mut target_profile_guard = target_profile.lock().unwrap();
+
+                        *target_profile_guard = profile;
                     }
                 },
                 CombinedMessage::LogMessage(log_message) => {
@@ -312,6 +340,7 @@ impl ChatApp {
                     .iter()
                     .filter_map(|message| match message {
                         Message::TextMessage(text_message) => Some(text_message),
+                        Message::ImageMessage(_) => None,
                     })
                     .collect();
 
@@ -436,21 +465,39 @@ impl ChatApp {
     }
 
     fn show_profile_image(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        if self.connection_status == ConnectionStatus::CONNECTED || true {
-            if self.my_profile.is_none() {
-                self.my_profile = Some(Profile::new("data/pojzo.jpg"));
-            }
-            if let Some(profile) = &self.my_profile {
-                if let Some(image) = &profile.image {
-                    let texture = Some(ctx.load_texture(
-                        "my_image",
-                        image.clone(),
-                        egui::TextureOptions::default(),
-                    ));
-                    if let Some(texture) = &texture {
-                        ui.image(texture);
-                    }
-                }
+
+        // let my_profile_guard = self.my_profile.lock().unwrap();
+        // let mut my_profile = my_profile_guard.clone();
+        // if self.connection_status == ConnectionStatus::CONNECTED || true {
+        //     if my_profile.image.is_none() {
+        //         my_profile = Some(Profile::new("data/pojzo.jpg"));
+        //     }
+
+        //     if let Some(my_profile) = my_profile {
+        //         if let Some(image) = &my_profile.image {
+        //             let texture = Some(ctx.load_texture(
+        //                 "my_image",
+        //                 image.clone(),
+        //                 egui::TextureOptions::default(),
+        //             ));
+        //             if let Some(texture) = &texture {
+        //                 ui.image(texture);
+        //             }
+        //         }
+        //     }
+        // }
+    }
+
+    pub fn show_target_profile_image(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let profile_guard = self.target_profile.lock().unwrap();
+        if let Some(image) = profile_guard.image.clone() {
+            let texture = Some(ctx.load_texture(
+                "target_image",
+                image.clone(),
+                egui::TextureOptions::default(),
+            ));
+            if let Some(texture) = &texture {
+                ui.image(texture);
             }
         }
     }
@@ -465,7 +512,7 @@ impl eframe::App for ChatApp {
                 self.show_status_panel(ctx);
                 if self.connection_status == ConnectionStatus::CONNECTED || true {
                     egui::SidePanel::right("profile_panel").show(ctx, |ui| {
-                        // self.show_profile_image(ctx, ui);
+                        self.show_target_profile_image(ctx, ui);
                     });
                 }
             });

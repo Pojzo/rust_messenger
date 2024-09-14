@@ -10,8 +10,8 @@ use crate::{
     enums::{
         connection_status::ConnectionStatus,
         message::{
-            construct_connection_message, construct_text_message_generic, CombinedMessage, Message,
-            MessageType,
+            construct_connection_message, construct_image_message_generic,
+            construct_text_message_generic, CombinedMessage, Message, MessageType,
         },
     },
 };
@@ -91,8 +91,20 @@ pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
     }
 }
 
-pub async fn receive_profile_picture(payload: Protocol) {
-    println!("Received image");
+pub async fn receive_profile_picture(
+    tx: &Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
+    payload: Protocol,
+) {
+    let image_protocol = payload.image_protocol.unwrap();
+    let content = image_protocol.content.as_bytes();
+    let width = image_protocol.width;
+    let height = image_protocol.height;
+
+    let image_message = construct_image_message_generic(content.to_vec(), width, height);
+
+    let tx_guard = tx.lock().await;
+    tx_guard.send(image_message).await.unwrap();
+    println!("Received profile picture, sent to UI");
 }
 
 pub async fn stream_read(
@@ -123,9 +135,10 @@ pub async fn stream_read(
                         let buffer = &buffer[..n];
                         let payload = deconstruct_payload(String::from_utf8_lossy(buffer).to_string());
                         if payload.image_protocol != None {
-                            receive_profile_picture(payload).await;
+                            receive_profile_picture(&tx, payload).await;
                             continue;
                         }
+
                         let content = payload.text_protocol.unwrap().content;
 
                         // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
@@ -181,7 +194,7 @@ pub async fn stream_write(
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
 ) {
-    send_profile_picture(&mut write_stream).await; // Pass mutable reference
+    // send_profile_picture(&mut write_stream).await; // Pass mutable reference
     loop {
         let mut message_guard = rx.lock().await;
 

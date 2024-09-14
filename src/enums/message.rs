@@ -9,6 +9,7 @@ pub(crate) enum CombinedMessage {
 #[derive(Clone)]
 pub enum Message {
     TextMessage(TextMessage),
+    ImageMessage(ImageMessage),
 }
 
 pub enum MessageType {
@@ -20,6 +21,7 @@ impl Message {
     pub fn to_int(&self) -> u8 {
         match self {
             Message::TextMessage(_) => 1,
+            Message::ImageMessage(_) => 2,
         }
     }
 }
@@ -39,6 +41,33 @@ pub enum LogMessage {
 #[derive(Clone)]
 pub struct ConnectionMessage {
     pub connection_status: ConnectionStatus,
+}
+
+#[derive(Clone)]
+pub struct ImageMessage {
+    pub content: Vec<u8>,
+    pub width: u16,
+    pub height: u16,
+}
+
+pub fn construct_image_message_generic(
+    content: Vec<u8>,
+    width: u16,
+    height: u16,
+) -> CombinedMessage {
+    CombinedMessage::Message(Message::ImageMessage(ImageMessage {
+        content,
+        width,
+        height,
+    }))
+}
+
+pub fn construct_image_message(content: Vec<u8>, width: u16, height: u16) -> Message {
+    Message::ImageMessage(ImageMessage {
+        content,
+        width,
+        height,
+    })
 }
 
 pub fn construct_text_message_generic(content: String, sent: bool) -> CombinedMessage {
