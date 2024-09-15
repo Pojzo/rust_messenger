@@ -11,7 +11,7 @@ use crate::{
         connection_status::ConnectionStatus,
         message::{
             construct_connection_message, construct_image_message_generic,
-            construct_text_message_generic, CombinedMessage, Message, MessageType,
+            construct_text_message_generic, CombinedMessage, ImageMessage, Message, MessageType,
         },
     },
 };
@@ -64,18 +64,15 @@ pub async fn handle_disconnect_from_source(
     tx_guard.send(disconnect_message).await.unwrap();
 }
 
-pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
-    let size_reduction = 0.2;
-    let profile = Profile::new("data/pojzo.jpg", size_reduction);
-    let image = profile.get_image().unwrap();
-    let bytes = color_image_to_bytes(&image);
-    let width = image.width() as u16;
-    let height = image.height() as u16;
-    let protocol = Protocol::new_image(2, bytes, width, height);
-    let serialized = protocol.serialize();
+pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf, image_message: ImageMessage) {
+    let payload = image_message.content;
+    let width = image_message.width;
+    let height = image_message.height;
 
-    let payload_size = serialized.len() as u32;
-    let payload_size_bytes = u32::to_be_bytes(payload_size);
+    let protocol = Protocol::new_image(2, payload, width, height);
+
+    let serialized = protocol.serialize();
+    let payload_size_bytes = u32::to_be_bytes(serialized.len() as u32);
 
     match write_stream.write_all(&payload_size_bytes).await {
         Ok(_) => {
@@ -206,7 +203,6 @@ pub async fn stream_write(
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
 ) {
-    // send_profile_picture(&mut write_stream).await; // Pass mutable reference
     loop {
         let mut message_guard = rx.lock().await;
 
@@ -233,19 +229,16 @@ pub async fn stream_write(
 
             }
             Some(generic_message) = message_guard.recv() => {
-                let content = match generic_message {CombinedMessage::Message(Message::TextMessage(message))=>message.content,
+                let content = match generic_message {
+                    CombinedMessage::Message(Message::TextMessage(message)) => message.content,
                     CombinedMessage::LogMessage(_) => {
                         continue;
                     }
-                    CombinedMessage::Message(Message::ImageMessage(_)) => {
+                    CombinedMessage::Message(Message::ImageMessage(image_message)) => {
+                        send_profile_picture(&mut write_stream, image_message).await;
                         continue;
                     }
                 };
-
-                    if content == "send" {
-                        send_profile_picture(&mut write_stream).await;
-                        continue;
-                    }
 
                 let payload = construct_payload(1, MessageType::TEXT, content.as_bytes().to_vec());
                 let payload_size = payload.len();
@@ -293,17 +286,14 @@ fn pad_string(string: &str, chunk_size: usize) -> String {
 fn pad_bytes(bytes: Vec<u8>, chunk_size: usize) -> Vec<u8> {
     let mut new_bytes = bytes.to_vec();
 
-    let add_size = chunk_size - (bytes.len() % chunk_size);
+    let add_size = (chunk_size - (bytes.len() % chunk_size)) % chunk_size;
 
-    if add_size != chunk_size {
-        for _ in 0..add_size {
-            new_bytes.push(0);
-        }
+    if add_size > 0 {
+        new_bytes.resize(new_bytes.len() + add_size, 0);
     }
 
-    return new_bytes;
+    new_bytes
 }
-
 /*
 ---- version ---- | ---- message type ---- | ---- offset ---- | ---- payload_len ----
         4 bits   |          4 bits        |           8 bits         |     20 bits
@@ -429,6 +419,7 @@ impl Protocol {
 
         let width_bytes = u16::to_be_bytes(width);
         let height_bytes = u16::to_be_bytes(height);
+        println!("Offset: {}", offset);
 
         let eof = vec![0u8; 8]; // 8 bytes of zero
 

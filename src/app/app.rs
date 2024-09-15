@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
-use image::GenericImageView;
+use image::{DynamicImage, GenericImageView};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -11,8 +11,9 @@ use std::sync::Mutex as StdMutex;
 use crate::enums::app_type::AppType;
 use crate::enums::connection_status::{self, ConnectionStatus};
 use crate::enums::message::{
-    construct_connection_message, construct_text_message, construct_text_message_generic,
-    CombinedMessage, LogMessage, Message, TextMessage,
+    construct_connection_message, construct_image_message, construct_image_message_generic,
+    construct_text_message, construct_text_message_generic, CombinedMessage, LogMessage, Message,
+    TextMessage,
 };
 use crate::network::network_utils::handle_connection;
 
@@ -28,6 +29,7 @@ type ProfileType = Arc<StdMutex<Profile>>;
 pub struct Profile {
     pub image: Option<ColorImage>,
     pub texture: Option<TextureHandle>,
+    sent: bool,
 }
 
 pub fn color_image_to_bytes(color_image: &egui::ColorImage) -> Vec<u8> {
@@ -87,9 +89,11 @@ impl Profile {
         );
         println!("len of bytes: {}", bytes.len());
         let color_image = ColorImage::from_rgba_unmultiplied(size, &bytes);
+
         Self {
             image: Some(color_image),
             texture: None,
+            sent: false,
         }
     }
 
@@ -101,6 +105,7 @@ impl Profile {
         Self {
             image: None,
             texture: None,
+            sent: false,
         }
     }
 }
@@ -121,6 +126,7 @@ pub struct ChatApp {
     connection_status: ConnectionStatus,
     disconect_notify: Arc<Notify>,
 
+    profile_pic_path: String,
     my_profile: ProfileType,
     target_profile: ProfileType,
 }
@@ -144,10 +150,14 @@ impl ChatApp {
 
             my_profile: Arc::new(StdMutex::new(Profile::default())),
             target_profile: Arc::new(StdMutex::new(Profile::default())),
+
+            profile_pic_path: "".to_string(),
         }
     }
 
-    fn load_my_profile(&mut self) {}
+    pub fn set_profile_pic_path(&mut self, profile_pic_path: String) {
+        self.profile_pic_path = profile_pic_path;
+    }
 
     fn init_connection(&self) {
         let app_type = self.app_type.clone();
@@ -326,6 +336,24 @@ impl ChatApp {
                 }
             };
         }
+    }
+
+    async fn send_my_profile(tx_input: AsyncSender, filepath: &str) {
+        let mut size_reduction = 0.3;
+        if filepath == "data/pojzo.jpg" {
+            size_reduction = 0.2;
+        }
+
+        let profile = Profile::new(filepath, size_reduction);
+        let image = profile.get_image().unwrap();
+        let bytes = color_image_to_bytes(&image);
+        let width = image.width() as u16;
+        let height = image.height() as u16;
+
+        let message = construct_image_message_generic(bytes, width, height);
+        let tx_guard = tx_input.lock().await;
+
+        tx_guard.send(message).await.unwrap();
     }
 }
 
@@ -530,6 +558,22 @@ impl eframe::App for ChatApp {
                     egui::SidePanel::right("profile_panel").show(ctx, |ui| {
                         self.show_target_profile_image(ctx, ui);
                     });
+                }
+                if self.connection_status == ConnectionStatus::CONNECTED {
+                    let mut my_profile_guard = self.my_profile.lock().unwrap();
+                    if my_profile_guard.sent == false {
+                        let tx_input_clone = self.tx_input.clone();
+                        if !self.profile_pic_path.is_empty() {
+                            let profile_pic_path = self.profile_pic_path.clone();
+                            my_profile_guard.sent = true;
+                            drop(my_profile_guard);
+                            let profile_pic_path_clone = profile_pic_path.clone();
+                            tokio::spawn(async move {
+                                Self::send_my_profile(tx_input_clone, &profile_pic_path_clone)
+                                    .await;
+                            });
+                        }
+                    }
                 }
             });
         });
