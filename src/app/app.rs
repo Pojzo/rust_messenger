@@ -50,18 +50,29 @@ pub fn color_image_to_bytes(color_image: &egui::ColorImage) -> Vec<u8> {
 }
 
 impl Profile {
-    pub fn new(filepath: &str) -> Self {
+    pub fn new(filepath: &str, size_reduction: f32) -> Self {
         let mut result = Self::default();
         if let Ok(image) = image::open(filepath) {
-            let new_width = 300;
-            let new_height = 300;
+            let width = image.width();
+            let height = image.height();
+
+            let new_width = (width as f32 * size_reduction) as u32;
+            let new_height = (height as f32 * size_reduction) as u32;
+
             let image = image.resize(new_width, new_height, image::imageops::FilterType::Nearest);
+            println!(
+                "Resized image from {}x{} to {}x{}",
+                width, height, new_width, new_height,
+            );
 
             let dim = image.dimensions();
             let size = [dim.0 as usize, dim.1 as usize];
             let color_image = ColorImage::from_rgba_unmultiplied(size, &image.to_rgba8().to_vec());
-            result.image = Some(color_image);
-
+            result.image = Some(color_image.clone());
+            println!(
+                "Size of bytes, {:?}",
+                color_image_to_bytes(&color_image).len(),
+            );
             result
         } else {
             result
@@ -70,6 +81,11 @@ impl Profile {
 
     pub fn from_bytes(bytes: Vec<u8>, width: u16, height: u16) -> Self {
         let size = [width as usize, height as usize];
+        println!(
+            "Constructing image from bytes: width: {}, height: {}",
+            width, height,
+        );
+        println!("len of bytes: {}", bytes.len());
         let color_image = ColorImage::from_rgba_unmultiplied(size, &bytes);
         Self {
             image: Some(color_image),

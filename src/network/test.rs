@@ -9,12 +9,13 @@ mod tests {
     #[test]
     fn test_serialize_deserialize() {
         let original_message = "Hello world".to_string();
-        let protocol = Protocol::new_text(2, original_message.clone());
+        let protocol = Protocol::new_text(2, original_message.as_bytes().to_vec());
 
         println!("{:?}", protocol);
 
         let serialized = protocol.serialize();
-        let deserialized = Protocol::deserialize(serialized);
+
+        let deserialized = Protocol::deserialize(serialized.as_slice());
 
         assert_eq!(protocol, deserialized);
 
@@ -26,10 +27,13 @@ mod tests {
     #[test]
     fn test_serialize_long_message() {
         let original_message = "Hello world".repeat(1000);
-        let protocol = Protocol::new_text(2, original_message.clone());
+        let protocol = Protocol::new_text(2, original_message.as_bytes().to_vec());
 
         let serialized = protocol.serialize();
-        let deserialized = Protocol::deserialize(serialized);
+        for byte in serialized.iter() {
+            print!("{:08b} ", byte);
+        }
+        let deserialized = Protocol::deserialize(serialized.as_slice());
 
         assert_eq!(protocol, deserialized);
 
@@ -40,13 +44,11 @@ mod tests {
     }
     #[test]
     fn test_serialize_really_long_message() {
-        let original_message = "Hello world".repeat(10000000);
-        let protocol = Protocol::new_text(2, original_message.clone());
-
-        println!("Len of original message: {}", original_message.len());
+        let original_message = "Hello world".repeat(1_000_123);
+        let protocol = Protocol::new_text(2, original_message.as_bytes().to_vec());
 
         let serialized = protocol.serialize();
-        let deserialized = Protocol::deserialize(serialized);
+        let deserialized = Protocol::deserialize(serialized.as_slice());
 
         assert_eq!(protocol, deserialized);
 
@@ -58,37 +60,41 @@ mod tests {
 
     #[test]
     fn test_serialize_deserialize_empty() {
-        let original_message = "".to_string();
+        let original_message = "".to_string().as_bytes().to_vec();
         let protocol = Protocol::new_text(2, original_message.clone());
         println!("Protocol: {:?}", protocol);
 
         let serialized = protocol.serialize();
-        let deserialized = Protocol::deserialize(serialized);
+        let deserialized = Protocol::deserialize(serialized.as_slice());
 
         assert_eq!(protocol, deserialized);
 
         assert_eq!(
-            original_message,
+            String::from_utf8(original_message).unwrap(),
             deserialized.text_protocol.unwrap().content
         );
     }
     #[test]
     fn test_serialize_deserialize_image() {
-        let profile = Profile::new("data/pojzo.jpg");
+        let profile = Profile::new("data/pojzo.jpg", 0.2);
         let image = profile.get_image().unwrap();
         let bytes = color_image_to_bytes(&image);
         let width = image.width() as u16;
         let height = image.height() as u16;
 
-        let string_bytes = String::from_utf8_lossy(&bytes);
-
-        let protocol = Protocol::new_image(2, string_bytes.to_string(), width, height);
+        println!("Len of bytes: {}", bytes.len());
+        let protocol = Protocol::new_image(2, bytes, width, height);
 
         let serialized = protocol.serialize();
         println!("Serialized len: {}", serialized.len());
 
-        let deserialized = Protocol::deserialize(serialized);
+        let deserialized = Protocol::deserialize(serialized.as_slice());
+
         assert_eq!(protocol, deserialized);
+        println!(
+            "Len of deserialized bytes: {}",
+            deserialized.image_protocol.as_ref().unwrap().content.len()
+        );
 
         assert_ne!(deserialized.image_protocol, None);
         let deserialized_image = deserialized.image_protocol.unwrap();
