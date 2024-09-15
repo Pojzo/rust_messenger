@@ -105,4 +105,35 @@ mod tests {
         assert_eq!(width, deserialized_width);
         assert_eq!(height, deserialized_height);
     }
+
+    fn test_serialize_deserialize_image2() {
+        let profile = Profile::new("data/kopernik.jpg", 0.2);
+        let image = profile.get_image().unwrap();
+        let bytes = color_image_to_bytes(&image);
+        let width = image.width() as u16;
+        let height = image.height() as u16;
+
+        println!("Len of bytes: {}", bytes.len());
+        let protocol = Protocol::new_image(2, bytes, width, height);
+
+        let serialized = protocol.serialize();
+        println!("Serialized len: {}", serialized.len());
+
+        let deserialized = Protocol::deserialize(serialized.as_slice());
+
+        assert_eq!(protocol, deserialized);
+        println!(
+            "Len of deserialized bytes: {}",
+            deserialized.image_protocol.as_ref().unwrap().content.len()
+        );
+
+        assert_ne!(deserialized.image_protocol, None);
+        let deserialized_image = deserialized.image_protocol.unwrap();
+
+        let deserialized_width = deserialized_image.width;
+        let deserialized_height = deserialized_image.height;
+
+        assert_eq!(width, deserialized_width);
+        assert_eq!(height, deserialized_height);
+    }
 }

@@ -65,22 +65,23 @@ pub async fn handle_disconnect_from_source(
 }
 
 pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
-    /*
-       let size_reduction = 0.2;
-       let profile = Profile::new("data/kopernik.jpg", size_reduction);
-       let image = profile.get_image().unwrap();
-       let width = image.width() as u16;
-       let height = image.height() as u16;
+    let size_reduction = 0.2;
+    let profile = Profile::new("data/pojzo.jpg", size_reduction);
+    let image = profile.get_image().unwrap();
+    let bytes = color_image_to_bytes(&image);
+    let width = image.width() as u16;
+    let height = image.height() as u16;
+    let protocol = Protocol::new_image(2, bytes, width, height);
+    let serialized = protocol.serialize();
 
-       match write_stream.write_all(serialized.as_bytes()).await {
-           Ok(_) => {
-               println!("Sent profile picture");
-           }
-           Err(e) => {
-               eprintln!("Failed to write to connection: {}", e);
-           }
-       }
-    */
+    match write_stream.write_all(&serialized).await {
+        Ok(_) => {
+            println!("Sent profile picture");
+        }
+        Err(e) => {
+            eprintln!("Failed to write to connection: {}", e);
+        }
+    }
 }
 
 pub async fn receive_profile_picture(
@@ -362,10 +363,6 @@ impl Protocol {
 
         let payload_len_bytes = padded_payload_len.to_be_bytes();
 
-        println!("Version bytes: {:?}", version_bytes);
-        println!("Message type bytes: {:?}", message_type_bytes);
-        println!("Offset bytes: {:?}", offset_bytes);
-
         let eof = vec![0u8; 8]; // 8 bytes of zero
 
         serialized_payload.extend_from_slice(&version_bytes);
@@ -397,33 +394,6 @@ impl Protocol {
 
         let width_bytes = u16::to_be_bytes(width);
         let height_bytes = u16::to_be_bytes(height);
-
-        for byte in version_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
-        println!();
-        for byte in message_type_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
-        println!();
-        for byte in offset_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
-        println!();
-        for byte in payload_len_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
-        println!();
-
-        for byte in width_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
-
-        println!();
-
-        for byte in height_bytes.iter() {
-            print!("{:08b} ", byte);
-        }
 
         let eof = vec![0u8; 8]; // 8 bytes of zero
 
@@ -492,12 +462,10 @@ impl Protocol {
     }
 
     pub fn deserialize_image(serialized_payload: &[u8]) -> Protocol {
-        // Extract version, message_type, and offset from the first 12 bits
         let version = serialized_payload[0];
         let message_type = serialized_payload[1];
         let offset = serialized_payload[2];
 
-        // Extract payload length from the next 32 bits
         let payload_len = u32::from_be_bytes([
             serialized_payload[3],
             serialized_payload[4],
@@ -505,18 +473,15 @@ impl Protocol {
             serialized_payload[6],
         ]);
 
-        // Extract width and height from the next 32 bits
         let width = u16::from_be_bytes([serialized_payload[7], serialized_payload[8]]);
         let height = u16::from_be_bytes([serialized_payload[9], serialized_payload[10]]);
 
         let payload_start = 11;
         let payload_end = payload_start + payload_len as usize;
 
-        // Extract the full payload and remove the offset
         let full_payload = &serialized_payload[payload_start..payload_end];
         let payload = &full_payload[..(full_payload.len() - offset as usize)];
 
-        // Image protocol
         let image_protocol = Some(ImageProtocol {
             content: payload.to_vec(),
             width,
