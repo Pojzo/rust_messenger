@@ -74,6 +74,18 @@ pub async fn send_profile_picture(write_stream: &mut OwnedWriteHalf) {
     let protocol = Protocol::new_image(2, bytes, width, height);
     let serialized = protocol.serialize();
 
+    let payload_size = serialized.len() as u32;
+    let payload_size_bytes = u32::to_be_bytes(payload_size);
+
+    match write_stream.write_all(&payload_size_bytes).await {
+        Ok(_) => {
+            println!("Sent payload size: {}", payload_size_bytes.len());
+        }
+        Err(e) => {
+            eprintln!("Failed to write to connection: {}", e);
+        }
+    }
+
     match write_stream.write_all(&serialized).await {
         Ok(_) => {
             println!("Sent profile picture");
@@ -93,6 +105,11 @@ pub async fn receive_profile_picture(
     let width = image_protocol.width;
     let height = image_protocol.height;
 
+    println!(
+        "Received profile picture, width: {}, height: {}",
+        width, height
+    );
+
     let image_message = construct_image_message_generic(content.to_vec(), width, height);
 
     let tx_guard = tx.lock().await;
@@ -108,9 +125,9 @@ pub async fn stream_read(
     tx: Arc<AsyncMutex<mpsc::Sender<CombinedMessage>>>,
     disconnect_notify: Arc<Notify>,
 ) {
-    // let mut buffer = [0; 512];
     let mut buffer = Vec::with_capacity(50_000_000);
     buffer.resize(50_000_000, 0);
+    let mut payload_len_buffer = [0u8; 4];
     {
         let connect_message = construct_connection_message(ConnectionStatus::CONNECTED);
         let tx_guard = tx.lock().await;
@@ -118,7 +135,7 @@ pub async fn stream_read(
     }
     loop {
         tokio::select! {
-            result = read_stream.read(&mut buffer) => {
+            result = read_stream.read_exact(&mut payload_len_buffer) => {
                 match result {
                     Ok(0) => {
                         println!("Connection closed by the client.");
@@ -127,17 +144,21 @@ pub async fn stream_read(
                     }
                     Ok(n) => {
                         println!("Read {} bytes", n);
-                        let buffer = &buffer[..n];
-                        let payload = deconstruct_payload(buffer.try_into().unwrap());
-                        if payload.image_protocol != None {
+                        let payload_len = u32::from_be_bytes(payload_len_buffer);
+
+                        let mut payload_buffer = vec![0u8; payload_len as usize];
+
+                        // Read the exact number of bytes specified by payload_len
+                        read_stream.read_exact(&mut payload_buffer).await.unwrap();
+
+                        let payload = deconstruct_payload(&payload_buffer);
+                        if payload.image_protocol.is_some() {
                             receive_profile_picture(&tx, payload).await;
                             continue;
                         }
 
                         let tx_guard = tx.lock().await;
                         let content = payload.text_protocol.unwrap().content;
-
-                        // let content = String::from_utf8_lossy(&buffer[..n]).to_string();
 
                         if content.trim() == "<DISCONNECT>" {
                             println!("Received disconnect message");
@@ -227,6 +248,20 @@ pub async fn stream_write(
                     }
 
                 let payload = construct_payload(1, MessageType::TEXT, content.as_bytes().to_vec());
+                let payload_size = payload.len();
+                let payload_size_bytes = u32::to_be_bytes(payload_size as u32);
+                // first send the size of the payload
+
+                match write_stream.write_all(&payload_size_bytes).await {
+                    Ok(_) => {
+                        println!("Sent payload size: {}", payload_size_bytes.len());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to write to connection: {}", e);
+                        break;
+                    }
+                }
+
                 match write_stream.write_all(&payload).await {
                     Ok(_) => {
                         println!("Sent message: {}", content);

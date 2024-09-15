@@ -106,6 +106,7 @@ mod tests {
         assert_eq!(height, deserialized_height);
     }
 
+    #[test]
     fn test_serialize_deserialize_image2() {
         let profile = Profile::new("data/kopernik.jpg", 0.2);
         let image = profile.get_image().unwrap();
